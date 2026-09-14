@@ -1,0 +1,31 @@
+
+Dependências para ComfyUI/custom_nodes:
+https://github.com/EDx-Labs/comfyui-minimaxh3-easy-optimized
+https://github.com/nicolab28/ComfyUI-ClipProj
+https://github.com/kijai/ComfyUI-KJNodes
+https://github.com/LAOGOU-666/Comfyui-Memory_Cleanup
+https://github.com/yolain/ComfyUI-Easy-Use
+https://github.com/rgthree/rgthree-comfy
+
+
+Modelos: 
+
+
+Baixar modelo text-to-video para a pasta ComfyUI/models/diffusion_models: https://huggingface.co/Kijai/MiniMax-H3-experimental/blob/main/minimax_h3_fl2va_pruned_w4a8_mixed.safetensors
+
+Baixar modelo ref-to-video para a pasta ComfyUI/models/diffusion_models:https://huggingface.co/Kijai/MiniMax-H3-experimental/blob/main/minimax_h3_ref2va_pruned_w4a8_mixed.safetensors
+
+
+Baixar para a pasta ComfyUI/models/clip_projections: https://huggingface.co/NicoLab28/ClipProj-MiniMax-H3/blob/main/mmh3-4b-ClipProj-celeb-mlp.safetensors
+
+
+Baixar para a pasta ComfyUI/models/text_encoders: https://huggingface.co/Comfy-Org/Krea-2/resolve/main/text_encoders/qwen3vl_4b_fp8_scaled.safetensors
+
+Baixar para a pasta ComfyUI/models/vae: https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors
+
+Baixar para a pasta ComfyUI/models/vae: https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/MiniMax-H3-video_vae_fp16.safetensors
+
+
+
+
+
