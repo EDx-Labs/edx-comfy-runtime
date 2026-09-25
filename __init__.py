@@ -20,6 +20,7 @@ from .nodes import (
     MiniMaxH3EasySelectedVideoContext,
 )
 from .h3_latent_upscaler import MiniMaxH3EasyLatentUpscaler3D
+from .h3_mlp_optimization import MiniMaxH3EasyMLPOptimization
 
 NODE_CLASS_MAPPINGS = {
     "MiniMaxH3EasyLoader": MiniMaxH3EasyLoader,
@@ -42,6 +43,7 @@ NODE_CLASS_MAPPINGS = {
     "MiniMaxH3EasyAspectRatio": MiniMaxH3EasyAspectRatio,
     "MiniMaxH3EasySecondPassConditioning": MiniMaxH3EasySecondPassConditioning,
     "MiniMaxH3EasyLatentUpscaler3D": MiniMaxH3EasyLatentUpscaler3D,
+    "MiniMaxH3EasyMLPOptimization": MiniMaxH3EasyMLPOptimization,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -65,6 +67,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3EasyAspectRatio": "MiniMax H3 Easy Aspect Ratio",
     "MiniMaxH3EasySecondPassConditioning": "MiniMax H3 Easy Second Pass Conditioning",
     "MiniMaxH3EasyLatentUpscaler3D": "MiniMax H3 Easy 3D Latent Upscale (Built-in)",
+    "MiniMaxH3EasyMLPOptimization": "MiniMax H3 Easy MLP Optimization",
 }
 
 WEB_DIRECTORY = "./web"

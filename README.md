@@ -257,6 +257,7 @@ API settings are stored in `prompt_optimizer.json` inside the plugin directory. 
 | MiniMax H3 Easy Aspect Ratio | Pass the first-pass aspect ratio to downstream resolution controls |
 | MiniMax H3 Easy Second Pass Conditioning | Rebuild resolution-bound conditioning for an external second pass |
 | MiniMax H3 Easy 3D Latent Upscale | Built-in H3 video-latent upscaler |
+| MiniMax H3 Easy MLP Optimization | Select original, fused-runtime, or prepared-weight chunked H3 MLP execution and log sampling metrics |
 
 ## Limits and notes
 
@@ -274,6 +275,16 @@ API settings are stored in `prompt_optimizer.json` inside the plugin directory. 
 - Both the classic ComfyUI canvas and Nodes 2.0 are supported.
 - Chinese browser environments display Chinese labels; other environments default to English.
 - Example workflows are available in [`workflow`](workflow). Some workflows may require additional models, LoRAs, or custom nodes.
+
+### Exact H3 MLP optimization and profiling
+
+Place **MiniMax H3 Easy MLP Optimization** on the `MODEL` connection before the guider and scheduler. It provides three execution modes:
+
+- `original`: the native H3 MLP, with profiling only;
+- `optimized`: ComfyUI's exact `linear_input_act` SwiGLU path, including its fused INT8 implementation when the installed runtime supports it;
+- `chunked`: exact row chunking with `fc1` and `fc2` prepared once per block call, reducing peak activation memory without materializing weights once per chunk.
+
+The node logs total MLP time, mean time per block call, peak allocated/reserved VRAM, and each diffusion-step time after sampling. For an A/B comparison, keep workflow, seed, model, sampler, sigmas and inputs fixed; run `original`, then `optimized`, and use `chunked` only if the first two still leave insufficient VRAM headroom. Start chunking at 1024 rows and test 2048/512 around it.
 
 ## Acknowledgements
 
