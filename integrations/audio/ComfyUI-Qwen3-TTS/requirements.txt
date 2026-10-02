@@ -1,0 +1,10 @@
+qwen-tts
+modelscope
+soundfile
+numpy
+torch
+transformers
+accelerate
+librosa
+tensorboard
+safetensors

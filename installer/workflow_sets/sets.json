@@ -1,0 +1,15 @@
+{
+  "workflow_sets": {
+    "minimax-h3-core":{"workflows":["integrations/video/minimax/comfyui-minimaxh3-easy/workflow/1.MiniMax_H3_Easy.json","integrations/video/minimax/comfyui-minimaxh3-easy/workflow/2.MiniMax_H3_Easy_Selected_Video_Refine.json","integrations/video/minimax/comfyui-minimaxh3-easy/workflow/3.MiniMax_H3_Easy_Context_Segments.json","integrations/video/minimax/comfyui-minimaxh3-easy/workflow/4.MiniMax_H3_Easy_Context_Segments_Refine.json","integrations/video/minimax/comfyui-minimaxh3-easy/workflow/5.MiniMax_H3_Easy_Context_Segments_Control.json"]},
+    "minimax-h3-extras":{"workflows":["integrations/video/minimax/comfyui-minimaxh3-easy/workflow/extras/MiniMax_H3_Easy_ClipProj_4B.json","integrations/video/minimax/comfyui-minimaxh3-easy/workflow/extras/MiniMax_H3_Easy_Pass2.json","integrations/video/minimax/comfyui-minimaxh3-easy/workflow/extras/MiniMax_H3_Easy_SelfLift.json","integrations/video/minimax/comfyui-minimaxh3-easy/workflow/extras/MiniMax_H3_Easy_Sigma_Latent_Upscale.json","integrations/video/minimax/comfyui-minimaxh3-easy/workflow/extras/MiniMax_H3_Easy_TRT_VAE.json"]},
+    "clipproj":{"workflows":["integrations/video/minimax/ComfyUI-ClipProj/example_workflows/minimax_h3_clipproj.json","integrations/video/minimax/ComfyUI-ClipProj/example_workflows/rewrite_h3_prompt.json","integrations/video/minimax/ComfyUI-ClipProj/example_workflows/caption_image.json"]},
+    "seedvr2":{"workflows":["integrations/upscale/seedvr2_videoupscaler/example_workflows/SeedVR2_simple_image_upscale.json","integrations/upscale/seedvr2_videoupscaler/example_workflows/SeedVR2_HD_video_upscale.json","integrations/upscale/seedvr2_videoupscaler/example_workflows/SeedVR2_4K_image_upscale.json"]},
+    "qwen3-tts":{"workflows":["integrations/audio/ComfyUI-Qwen3-TTS/example_workflows/custom_voice.json","integrations/audio/ComfyUI-Qwen3-TTS/example_workflows/voice_design.json","integrations/audio/ComfyUI-Qwen3-TTS/example_workflows/simple_voice_clone-REQUIRES-ASR.json"]},
+    "qwen-asr":{"workflows":["integrations/audio/comfyui-qwen-asr/example_workflows/base.json"]},
+    "qwen-h3":{"workflows":["LLM/ComfyUI_Qwen_H3_Prompt/example workflow/Qwen H3 Prompt Example Workflow.json"]},
+    "krea2-reference":{"workflows":["workflows/image/krea2/character-reference.json"]},
+    "minimax-music3":{"workflows":["workflows/audio/minimax-music3/text-to-music.json"]},
+    "chatterbox-tts":{"workflows":["workflows/audio/chatterbox/text-to-speech.json"]},
+    "chatterbox-voice-cloning":{"workflows":["workflows/audio/chatterbox/voice-cloning.json"]}
+  }
+}
