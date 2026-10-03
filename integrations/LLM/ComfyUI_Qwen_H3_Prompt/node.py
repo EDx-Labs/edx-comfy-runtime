@@ -632,6 +632,7 @@ class QwenH3Prompt(io.ComfyNode):
                     result,
                     mode,
                     duration,
+                    skill=selected,
                 )
                 if issues:
                     LOGGER.warning(
@@ -673,10 +674,11 @@ class QwenH3Prompt(io.ComfyNode):
                         result,
                         mode,
                         duration,
+                        skill=selected,
                     )
                     if remaining:
                         raise RuntimeError(
-                            "Qwen output still fails the basic output contract: "
+                            f"Qwen output still fails the {selected} output contract: "
                             + "; ".join(remaining)
                         )
                 LOGGER.info("[Qwen H3] Node output validation passed")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -282,6 +283,165 @@ SILENCE_REQUEST_PATTERNS = (
     re.compile(r"(?:完全静音|全程静音|静音视频|视频静音|无声视频|不要任何声音|不需要任何声音)"),
 )
 
+PROJECT_VISUAL_PLANNER_SKILL = "project-visual-planner"
+PROJECT_VISUAL_PLANNER_SCHEMA = "project-visual-planner/v1"
+_PLANNER_ROOT_FIELDS = {
+    "schema_version", "analysis_scope", "window", "style",
+    "characters", "objects", "environments", "scenes",
+}
+_PLANNER_ENTITY_FIELDS = {
+    "id", "name", "aliases", "visual_description", "scene_ids",
+}
+_PLANNER_SCENE_FIELDS = {
+    "scene_id", "characters", "objects", "environment", "visual_context",
+    "image_prompt", "motion_intent", "state_in", "required_action",
+    "state_out", "framing", "camera",
+}
+_AMBIGUOUS_ALIASES = {"he", "she", "they", "it", "ele", "ela", "eles", "elas"}
+
+
+def _strict_json_object(text: str) -> tuple[dict | None, list[str]]:
+    """Parse one complete JSON object; surrounding prose is invalid by design."""
+    stripped = text.strip()
+    try:
+        value = json.loads(stripped)
+    except (TypeError, json.JSONDecodeError) as error:
+        return None, [f"invalid JSON: {error}"]
+    if not isinstance(value, dict):
+        return None, ["the root must be a JSON object"]
+    return value, []
+
+
+def validate_project_visual_planner_output(text: str) -> list[str]:
+    """Validate the programmatic contract emitted by project-visual-planner."""
+    value, issues = _strict_json_object(text)
+    if value is None:
+        return issues
+    if set(value) != _PLANNER_ROOT_FIELDS:
+        issues.append("root fields must match the project-visual-planner/v1 contract exactly")
+    if value.get("schema_version") != PROJECT_VISUAL_PLANNER_SCHEMA:
+        issues.append(f"schema_version must be {PROJECT_VISUAL_PLANNER_SCHEMA!r}")
+
+    scope = value.get("analysis_scope")
+    window = value.get("window")
+    if scope not in {"full", "window"}:
+        issues.append("analysis_scope must be 'full' or 'window'")
+    if scope == "full" and window is not None:
+        issues.append("window must be null for full analysis")
+    if scope == "window":
+        if not isinstance(window, dict) or set(window) != {"index", "count", "overlap_scene_ids"}:
+            issues.append("window scope requires index, count, and overlap_scene_ids")
+        elif (
+            not isinstance(window["index"], int)
+            or isinstance(window["index"], bool)
+            or not isinstance(window["count"], int)
+            or isinstance(window["count"], bool)
+            or window["index"] < 0
+            or window["count"] < 1
+            or window["index"] >= window["count"]
+            or not isinstance(window["overlap_scene_ids"], list)
+            or not all(isinstance(item, str) for item in window["overlap_scene_ids"])
+        ):
+            issues.append("window metadata has invalid values")
+
+    style = value.get("style")
+    style_fields = {"decision", "preset_id", "name", "prompt", "reason"}
+    if not isinstance(style, dict) or set(style) != style_fields:
+        issues.append("style must contain decision, preset_id, name, prompt, and reason")
+    else:
+        decision = style.get("decision")
+        if decision not in {"reuse", "new"}:
+            issues.append("style.decision must be 'reuse' or 'new'")
+        if decision == "reuse" and not isinstance(style.get("preset_id"), str):
+            issues.append("a reused style requires a string preset_id")
+        if decision == "new" and style.get("preset_id") is not None:
+            issues.append("a new style requires preset_id null")
+        if any(not isinstance(style.get(field), str) or not style[field].strip() for field in ("name", "prompt", "reason")):
+            issues.append("style name, prompt, and reason must be non-empty strings")
+
+    entity_ids: dict[str, str] = {}
+    entity_scene_ids: dict[str, set[str]] = {}
+    for collection, prefix in (("characters", "character:"), ("objects", "object:"), ("environments", "environment:")):
+        entities = value.get(collection)
+        if not isinstance(entities, list):
+            issues.append(f"{collection} must be an array")
+            continue
+        for entity in entities:
+            if not isinstance(entity, dict) or set(entity) != _PLANNER_ENTITY_FIELDS:
+                issues.append(f"each {collection} entry must match the entity contract exactly")
+                continue
+            entity_id = entity.get("id")
+            if not isinstance(entity_id, str) or not entity_id.startswith(prefix) or len(entity_id) == len(prefix):
+                issues.append(f"{collection} IDs must use the {prefix!r} prefix")
+                continue
+            if entity_id in entity_ids:
+                issues.append(f"duplicate entity id: {entity_id}")
+            entity_ids[entity_id] = collection
+            if not isinstance(entity.get("name"), str) or not entity["name"].strip():
+                issues.append(f"entity {entity_id} requires a name")
+            if not isinstance(entity.get("visual_description"), str):
+                issues.append(f"entity {entity_id} visual_description must be a string")
+            aliases = entity.get("aliases")
+            if not isinstance(aliases, list) or not all(isinstance(alias, str) and alias.strip() for alias in aliases):
+                issues.append(f"entity {entity_id} aliases must be non-empty strings")
+            elif any(alias.strip().casefold() in _AMBIGUOUS_ALIASES for alias in aliases):
+                issues.append(f"entity {entity_id} contains an ambiguous pronoun alias")
+            scene_ids = entity.get("scene_ids")
+            if not isinstance(scene_ids, list) or not all(isinstance(item, str) and item for item in scene_ids):
+                issues.append(f"entity {entity_id} scene_ids must be non-empty strings")
+            else:
+                entity_scene_ids[entity_id] = set(scene_ids)
+
+    scenes = value.get("scenes")
+    scene_ids: set[str] = set()
+    scene_links: dict[str, set[str]] = {}
+    if not isinstance(scenes, list):
+        issues.append("scenes must be an array")
+        scenes = []
+    for scene in scenes:
+        if not isinstance(scene, dict) or set(scene) != _PLANNER_SCENE_FIELDS:
+            issues.append("each scene must match the scene contract exactly")
+            continue
+        scene_id = scene.get("scene_id")
+        if not isinstance(scene_id, str) or not scene_id:
+            issues.append("each scene requires a non-empty scene_id")
+            continue
+        if scene_id in scene_ids:
+            issues.append(f"duplicate scene id: {scene_id}")
+        scene_ids.add(scene_id)
+        linked: set[str] = set()
+        for field, collection in (("characters", "characters"), ("objects", "objects")):
+            ids = scene.get(field)
+            if not isinstance(ids, list) or not all(isinstance(item, str) for item in ids):
+                issues.append(f"scene {scene_id} {field} must be an array of IDs")
+                continue
+            for entity_id in ids:
+                if entity_ids.get(entity_id) != collection:
+                    issues.append(f"scene {scene_id} references unknown {field} id: {entity_id}")
+                linked.add(entity_id)
+        environment = scene.get("environment")
+        if environment is not None:
+            if not isinstance(environment, str) or entity_ids.get(environment) != "environments":
+                issues.append(f"scene {scene_id} references an unknown environment id")
+            elif environment:
+                linked.add(environment)
+        for field in _PLANNER_SCENE_FIELDS - {"scene_id", "characters", "objects", "environment"}:
+            if not isinstance(scene.get(field), str):
+                issues.append(f"scene {scene_id} {field} must be a string")
+        forbidden = {"GENERATE", "HOLD"}
+        if any(scene.get(field, "").strip().upper() in forbidden for field in ("motion_intent", "required_action")):
+            issues.append(f"scene {scene_id} must not make a GENERATE/HOLD decision")
+        scene_links[scene_id] = linked
+
+    for entity_id, linked_scenes in entity_scene_ids.items():
+        unknown = linked_scenes - scene_ids
+        if unknown:
+            issues.append(f"entity {entity_id} references unknown scenes: {sorted(unknown)}")
+        actual = {scene_id for scene_id, links in scene_links.items() if entity_id in links}
+        if linked_scenes != actual:
+            issues.append(f"entity {entity_id} scene_ids do not match scene associations")
+    return issues
+
 
 def detect_h3_mode(image_count: int, video_count: int) -> str | None:
     """Resolve modes that do not require understanding the user's image intent."""
@@ -473,7 +633,12 @@ def output_issues(
     mode: str,
     duration: float,
     require_complete_silence: bool = False,
+    skill: str | None = None,
 ) -> list[str]:
-    """Return only a basic empty-output diagnostic; content shape is intentionally unrestricted."""
+    """Validate generic output, plus strict contracts owned by selected Skills."""
     del mode, duration, require_complete_silence
-    return ["The output is empty"] if not text.strip() else []
+    if not text.strip():
+        return ["The output is empty"]
+    if skill == PROJECT_VISUAL_PLANNER_SKILL:
+        return validate_project_visual_planner_output(text)
+    return []
