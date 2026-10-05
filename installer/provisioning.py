@@ -52,6 +52,67 @@ _HASH_LOCKS_GUARD = threading.Lock()
 def _hash_lock(path: Path) -> threading.Lock:
     with _HASH_LOCKS_GUARD: return _HASH_LOCKS.setdefault(str(path), threading.Lock())
 
+def _windows_pid_listed(pid: int) -> bool | None:
+    """True/False se o PID consta no snapshot de processos do sistema (Toolhelp32); None se não deu para consultar."""
+    import ctypes
+    from ctypes import wintypes
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD),
+                    ("szExeFile", ctypes.c_wchar * 260)]
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    if snapshot in (None, wintypes.HANDLE(-1).value, ctypes.c_void_p(-1).value): return None
+    try:
+        entry = PROCESSENTRY32W(); entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        more = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        if not more: return None
+        while more:
+            if entry.th32ProcessID == pid: return True
+            more = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+        return False
+    finally:
+        kernel32.CloseHandle(snapshot)
+
+def _windows_process_state(pid: int) -> str:
+    """Consulta Win32 sem sinalizar nem terminar o processo. 'alive' | 'dead' | 'unknown'."""
+    import ctypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    handle = kernel32.OpenProcess(0x00100000 | 0x1000, 0, pid)  # SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        error = ctypes.get_last_error()
+        if error == 87: return "dead"  # ERROR_INVALID_PARAMETER: não existe processo com esse PID
+        if error == 5:  # acesso negado: existe protegido OU é um processo já encerrado cujo objeto o kernel ainda retém
+            listed = _windows_pid_listed(pid)  # o snapshot lista todos os processos, independentemente de permissão
+            return "unknown" if listed is None else "alive" if listed else "dead"
+        return "unknown"
+    try:
+        result = kernel32.WaitForSingleObject(handle, 0)
+        return "alive" if result == 0x102 else "dead" if result == 0 else "unknown"  # WAIT_TIMEOUT / WAIT_OBJECT_0
+    finally:
+        kernel32.CloseHandle(handle)
+
+def _posix_process_state(pid: int) -> str:
+    try: os.kill(pid, 0)  # sinal 0 não entrega sinal em POSIX
+    except ProcessLookupError: return "dead"
+    except PermissionError: return "alive"  # existe, de outro usuário
+    except (OSError, SystemError, ValueError, OverflowError): return "unknown"
+    return "alive"
+
+def process_state(pid: int) -> str:
+    """'alive' | 'dead' | 'unknown'. Nunca usa os.kill no Windows (lá ele termina o processo)."""
+    try: return _windows_process_state(pid) if IS_WINDOWS else _posix_process_state(pid)
+    except Exception: return "unknown"
+
+IS_WINDOWS = os.name == "nt"
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -506,6 +567,31 @@ class Provisioner:
             if command: self._run_cancellable(command, cancel_event, item.get("name", ident))
         self._check_cancelled(cancel_event)
         state["components"][ident] = {"version": item.get("version", "0"), "fingerprint": version, "updated_at": time.time()}
+    @staticmethod
+    def _reclaim_orphan_lock(lock_path: Path, dead_pid: int) -> None:
+        """Remove um lock órfão sem corrida. Nunca toca no .partial (ciclos de vida distintos).
+
+        Um guard O_EXCL serializa a recuperação: quem o obtém relê o lock e só remove se
+        ainda for do mesmo PID morto; um lock novo adquirido por outro processo é preservado.
+        """
+        guard = lock_path.with_suffix(lock_path.suffix + ".reclaim")
+        try:
+            descriptor = os.open(guard, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                if time.time() - guard.stat().st_mtime > 60: guard.unlink(missing_ok=True)  # guard órfão
+            except OSError: pass
+            return
+        except OSError:
+            return
+        os.close(descriptor)
+        try:
+            try: current = int(json.loads(lock_path.read_text(encoding="utf-8")).get("pid", 0))
+            except FileNotFoundError: return
+            except (OSError, ValueError): current = dead_pid
+            if current == dead_pid: lock_path.unlink(missing_ok=True)
+        finally:
+            guard.unlink(missing_ok=True)
     @contextmanager
     def _asset_lock(self, target: Path, cancel_event=None):
         """Serialize a model install across Studio processes, not only threads."""
@@ -518,22 +604,18 @@ class Provisioner:
                 if cancel_event is not None and cancel_event.is_set():
                     raise ProvisioningCancelled("download cancelado enquanto aguardava outro provisionamento")
                 try:
-                    owner = json.loads(lock_path.read_text(encoding="utf-8"))
-                    owner_pid = int(owner.get("pid", 0))
-                    owner_alive = owner_pid > 0
-                    if owner_alive:
-                        try:
-                            os.kill(owner_pid, 0)
-                        except ProcessLookupError:
-                            owner_alive = False
-                        except PermissionError:
-                            owner_alive = True
-                        except (OSError, ValueError):
-                            owner_alive = False
-                    if not owner_alive:
-                        lock_path.unlink(missing_ok=True)
+                    owner = json.loads(lock_path.read_text(encoding="utf-8")); owner_pid = int(owner.get("pid", 0))
+                    # Só um processo DEFINITIVAMENTE inexistente torna o lock órfão. Se não der para saber
+                    # (ex.: acesso negado), mantém o lock e espera; só a idade máxima de 24 h (mesma regra
+                    # dos locks ilegíveis) o libera. Limitação: o lock guarda só o PID, que pode ter sido reutilizado.
+                    state = "dead" if owner_pid <= 0 else process_state(owner_pid)
+                    if state == "unknown" and time.time() - float(owner.get("created_at") or time.time()) > 24 * 60 * 60: state = "dead"
+                    if state == "dead":
+                        self._reclaim_orphan_lock(lock_path, owner_pid)
                         continue
-                except (OSError, ValueError, json.JSONDecodeError):
+                except FileNotFoundError:
+                    continue  # lock liberado entre o O_EXCL e a leitura: tenta adquirir de novo
+                except (OSError, ValueError):
                     try:
                         if time.time() - lock_path.stat().st_mtime > 24 * 60 * 60:
                             lock_path.unlink(missing_ok=True)
