@@ -414,6 +414,14 @@ class Provisioner:
             for requirement in self.profiles[profile].get("requires", []): visit(requirement)
             active.pop(); seen.add(profile); ordered.append(profile)
         visit(requested); return list(reversed(ordered))
+    def plan_uninstall(self, target: str, comfy: Path):
+        """Plano de desinstalação SOMENTE LEITURA (REMOVE / KEEP_SHARED / KEEP_REQUIRED / KEEP_UNMANAGED)."""
+        from .uninstall import Uninstaller
+        return Uninstaller(self).plan(target, comfy)
+    def uninstall(self, target: str, comfy: Path, plan=None):
+        """Executa a desinstalação revalidando o plano; idempotente. Não desinstala dependências pip."""
+        from .uninstall import Uninstaller
+        return Uninstaller(self).execute(target, comfy, plan)
     def _state_path(self, comfy: Path) -> Path: return comfy / "user" / "default" / "EDx" / "provisioning-state.json"
     def _model_path(self, comfy: Path, model: dict[str, Any]) -> Path: return comfy / "models" / model["directory"] / model["filename"]
     @staticmethod
@@ -438,6 +446,16 @@ class Provisioner:
             data = read_json(cache, {"schema_version": 1, "models": {}}); data.setdefault("models", {})
             data["models"][str(path)] = {"sha256": model["sha256"], "size_bytes": model.get("size_bytes"), **self._file_stamp(path), "validated_at": time.time()}
             write_json(cache, data)
+    def _mark_owned(self, ident: str, path: Path) -> None:
+        """Registra que ESTE arquivo (tamanho + mtime_ns) foi criado pelo Runtime. Reuso de arquivo preexistente nunca passa por aqui."""
+        cache = self._validation_cache_path(path)
+        if cache is None or not path.is_file(): return
+        state_path = cache.with_name("provisioning-state.json")
+        with _VALIDATION_WRITE_LOCK:
+            state = read_json(state_path, {"schema_version": 1, "profiles": {}, "components": {}, "models": {}, "workflows": {}})
+            record = state.setdefault("models", {}).setdefault(ident, {})
+            record.update({"path": str(path), "owned": True, "owned_stamp": self._file_stamp(path)})
+            write_json(state_path, state)
     def _forget_model(self, path: Path) -> None:
         cache = self._validation_cache_path(path)
         if cache is None: return
@@ -699,6 +717,7 @@ class Provisioner:
                         raise ProvisioningError(f"download inválido para {ident}")
                     os.replace(partial, target)
                     self._remember_model(target, model)  # reaproveita o SHA já verificado do .partial
+                    self._mark_owned(ident, target)  # materializado pelo Runtime: ownership provado, gravado já (sobrevive a crash)
                     self._emit(
                         progress, "ASSET_READY", asset=ident,
                         bytes_downloaded=current, bytes_total=expected,
@@ -800,7 +819,13 @@ class Provisioner:
                     downloaded = self._download(ident, target, model, progress=model_progress, cancel_event=cancel_event)
                     if downloaded is not False and remaining_sizes.get(ident) is not None:
                         completed_bytes += int(remaining_sizes[ident] or 0)
-                if self._valid_model(target, model): state.setdefault("models", {})[ident] = {"version": model.get("version", "0"), "path": str(target), "updated_at": time.time()}
+                if self._valid_model(target, model):
+                    # owned só se o Runtime criou o arquivo (download agora ou antes, gravado por _mark_owned); reuso/repair não toma posse.
+                    disk = read_json(state_path, {}).get("models", {}).get(ident, {}); memory = state.get("models", {}).get(ident, {})
+                    previous = disk if disk.get("owned") else memory
+                    record = {"version": model.get("version", "0"), "path": str(target), "updated_at": time.time(), "owned": bool(previous.get("owned"))}
+                    if record["owned"] and previous.get("owned_stamp"): record["owned_stamp"] = previous["owned_stamp"]
+                    state.setdefault("models", {})[ident] = record
         for ident in plan.workflow_sets:
             self._check_cancelled(cancel_event)
             self._emit(progress, "INSTALLING_COMPONENT", component=f"workflow:{ident}")
@@ -809,9 +834,13 @@ class Provisioner:
         if before_commit:
             before_commit()
         for profile_id in plan.profiles:
-            state.setdefault("profiles", {})[profile_id] = {
+            previous = state.setdefault("profiles", {}).get(profile_id)
+            # "explicit": a capability foi pedida pelo usuário (vs. dependência). Registro legado sem a chave conta como explícito.
+            explicit = profile_id == plan.profile_id or bool(previous and previous.get("explicit", True))
+            state["profiles"][profile_id] = {
                 "version": self.profiles[profile_id].get("version", "0"),
                 "resolved_profiles": self._resolved_profiles(profile_id),
                 "provisioned_at": time.time(),
+                "explicit": explicit,
             }
         write_json(state_path, state); print(f"[EDx] perfil {plan.profile_id} provisionado. Reinicie o ComfyUI.")
