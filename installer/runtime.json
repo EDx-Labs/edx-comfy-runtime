@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "comfyui": {
+    "repository": "https://github.com/comfyanonymous/ComfyUI.git",
+    "revision": "e01fb4c",
+    "entrypoint": "main.py",
+    "requirements": "requirements.txt",
+    "torch_backends": {
+      "nvidia": {
+        "packages": ["torch", "torchvision", "torchaudio"],
+        "index_url": "https://download.pytorch.org/whl/cu130"
+      }
+    },
+    "health_path": "/system_stats",
+    "listen_host": "127.0.0.1",
+    "default_port": 8189
+  }
+}

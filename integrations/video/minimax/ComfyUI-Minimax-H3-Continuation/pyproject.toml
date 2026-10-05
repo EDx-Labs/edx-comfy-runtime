@@ -1,0 +1,35 @@
+[project]
+name = "comfyui-minimax-h3-continuation"
+version = "0.6.3"
+description = "Native latent-tail continuation nodes for MiniMax H3 AV latents"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/ttulttul/ComfyUI-Minimax-H3-Continuation"
+"Bug Tracker" = "https://github.com/ttulttul/ComfyUI-Minimax-H3-Continuation/issues"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.12",
+]
+
+[tool.comfy]
+PublisherId = "ttulttul"
+DisplayName = "MiniMax H3 Continuation"
+requires-comfyui = ">=0.30.0"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --confcutdir=tests"
+
+[tool.ruff]
+exclude = ["AGENTS.md", "plan.md"]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]

@@ -13,7 +13,7 @@
       "inputs": [],
       "outputs": [{"name": "MODEL", "type": "MODEL", "links": [1]}],
       "properties": {"Node name for S&R": "UNETLoader"},
-      "widgets_values": ["turbo_fp8_scaled.safetensors", "default"]
+      "widgets_values": ["krea2_turbo_fp8_scaled.safetensors", "default"]
     },
     {
       "id": 2,

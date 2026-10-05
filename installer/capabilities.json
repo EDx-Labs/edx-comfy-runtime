@@ -1,1 +1,21 @@
-{"capabilities":{"image-generation":{"providers":["krea2"]},"character-reference-image":{"providers":["krea2-reference"]},"music-generation":{"providers":["minimax-music3","minimax-music3-low-vram"]},"text-to-speech":{"providers":["qwen3-tts","chatterbox-tts"]},"voice-cloning":{"providers":["qwen3-tts","chatterbox-voice-clone"]},"speech-to-text":{"providers":["qwen-asr"]},"upscale":{"providers":["seedvr2"]},"prompt-generation":{"providers":["qwen-h3"]}}}
+{
+  "capabilities": {
+    "video-generation": {"aliases":["minimax","minimax_h3"],"providers":["minimax-h3-fast"]},
+    "image-generation": {"aliases":["krea2","krea_2"],"providers":["krea2"]},
+    "character-reference-image": {"aliases":["krea2-reference","krea2_reference"],"providers":["krea2-reference"]},
+    "music-generation": {"providers":["minimax-music3-low-vram","minimax-music3"]},
+    "text-to-speech": {"aliases":["qwen3_tts"],"providers":["qwen3-tts","chatterbox-tts"]},
+    "voice-cloning": {"providers":["qwen3-tts","chatterbox-voice-clone"]},
+    "speech-to-text": {"providers":["qwen-asr"]},
+    "upscale": {"aliases":["seedvr2"],"providers":["seedvr2"]},
+    "prompt-generation": {"aliases":["qwen-h3","qwen_h3"],"providers":["qwen-h3"]}
+  },
+  "install_groups": {
+    "krea2-full": {
+      "name": "Krea 2 completo",
+      "description": "Instala Krea 2 e os recursos adicionais de referência em uma única operação incremental.",
+      "profile": "krea2-full",
+      "members": ["krea2", "krea2-reference"]
+    }
+  }
+}

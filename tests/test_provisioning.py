@@ -1,10 +1,16 @@
 from __future__ import annotations
 import json
+import hashlib
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from installer.provisioning import Provisioner, ProvisioningError, fingerprint, write_json
+from installer.provisioning import (
+    InstallPlan, Provisioner, ProvisioningCancelled, ProvisioningError,
+    fingerprint, write_json,
+)
 
 
 class ProvisionerTests(unittest.TestCase):
@@ -15,6 +21,46 @@ class ProvisionerTests(unittest.TestCase):
         self.provisioner = Provisioner()
 
     def tearDown(self) -> None: self.tmp.cleanup()
+
+    def fake_krea_downloads(self):
+        payloads = {
+            "krea2-turbo-fp8": b"diffusion",
+            "qwen3vl-4b-fp8": b"fp8-encoder",
+            "qwen-image-vae": b"vae",
+            "qwen3vl-4b-bf16": b"bf16-encoder",
+        }
+        calls = []
+
+        class Response:
+            status = 200
+            def __init__(self, data): self.data = data; self.offset = 0
+            def read(self, size=-1):
+                if self.offset >= len(self.data): return b""
+                end = len(self.data) if size < 0 else min(len(self.data), self.offset + size)
+                value = self.data[self.offset:end]; self.offset = end; return value
+            def close(self): pass
+            def __enter__(self): return self
+            def __exit__(self, *_args): self.close()
+
+        for ident, data in payloads.items():
+            self.provisioner.models[ident].update({
+                "url": f"https://example.invalid/{ident}",
+                "size_bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+            })
+
+        def opener(request, timeout):
+            ident = request.full_url.rsplit("/", 1)[-1]
+            calls.append(ident)
+            return Response(payloads[ident])
+
+        self.provisioner.opener = opener
+        return payloads, calls
+
+    def write_model(self, ident, data):
+        model = self.provisioner.models[ident]
+        target = self.comfy / "models" / model["directory"] / model["filename"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
 
     def test_simple_resolution_and_deduplication(self) -> None:
         plan = self.provisioner.plan("minimax-h3-fast", self.comfy)
@@ -37,6 +83,8 @@ class ProvisionerTests(unittest.TestCase):
         self.assertEqual(fast.workflow_sets, high.workflow_sets)
 
     def test_high_reuses_fast_filesystem_resources(self) -> None:
+        self.provisioner.models["qwen3vl-4b-fp8"].pop("size_bytes", None)
+        self.provisioner.models["qwen3vl-4b-fp8"].pop("sha256", None)
         fast = self.provisioner.plan("minimax-h3-fast", self.comfy)
         for component_id in fast.components:
             component = self.provisioner.components[component_id]
@@ -85,6 +133,51 @@ class ProvisionerTests(unittest.TestCase):
         self.assertIn("qwen-asr", payload["profiles"])
         self.assertTrue(first)
 
+    def test_cancel_at_commit_boundary_never_marks_profile_installed(self) -> None:
+        cancel = threading.Event()
+        plan = self.provisioner.plan("qwen-asr", self.comfy)
+
+        def cancel_before_commit():
+            cancel.set()
+            raise ProvisioningCancelled("cancelled at commit boundary")
+
+        with self.assertRaises(ProvisioningCancelled):
+            self.provisioner.install(
+                plan, skip_models=True, skip_deps=True,
+                cancel_event=cancel, before_commit=cancel_before_commit,
+            )
+
+        state = self.comfy / "user" / "default" / "EDx" / "provisioning-state.json"
+        self.assertFalse(state.exists())
+
+    def test_install_progress_identifies_model_position_with_real_download_bytes(self) -> None:
+        self.provisioner.models["fixture-model"] = {
+            "url": "https://example.invalid/fixture",
+            "filename": "fixture.bin", "directory": "checkpoints", "size_bytes": 4,
+        }
+        self.provisioner.profiles["fixture-profile"] = {"version": "1"}
+        plan = InstallPlan(
+            "fixture-profile", ["fixture-profile"], [], ["fixture-model"], [], self.comfy,
+        )
+        events = []
+
+        def download(ident, target, model, *, progress=None, cancel_event=None):
+            progress({
+                "phase": "DOWNLOADING_MODEL", "asset": ident,
+                "bytes_downloaded": 2, "bytes_total": 4, "progress": 0.5,
+            })
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"data")
+
+        with mock.patch.object(self.provisioner, "_download", side_effect=download):
+            self.provisioner.install(plan, progress=events.append)
+
+        downloading = next(item for item in events if item["phase"] == "DOWNLOADING_MODEL")
+        self.assertEqual(downloading["bytes_downloaded"], 2)
+        self.assertEqual(downloading["bytes_total"], 4)
+        self.assertEqual(downloading["model_index"], 1)
+        self.assertEqual(downloading["model_total"], 1)
+
     def test_music3_variants_share_encoder_vae_and_workflow(self) -> None:
         standard = self.provisioner.plan("minimax-music3", self.comfy)
         low_vram = self.provisioner.plan("minimax-music3-low-vram", self.comfy)
@@ -97,8 +190,86 @@ class ProvisionerTests(unittest.TestCase):
         plan = self.provisioner.plan("krea2-reference", self.comfy)
         self.assertEqual(plan.profiles, ["krea2-reference", "krea2"])
         self.assertEqual(len(plan.models), len(set(plan.models)))
-        self.assertIn("krea2-reference-runtime", plan.components)
+        self.assertEqual(plan.components, [])
+        self.assertEqual(
+            set(plan.models),
+            {"krea2-turbo-fp8", "qwen3vl-4b-fp8", "qwen-image-vae", "qwen3vl-4b-bf16"},
+        )
         self.assertIn("krea2-reference", plan.workflow_sets)
+
+    def test_clean_krea_install_group_downloads_each_physical_asset_once(self) -> None:
+        payloads, calls = self.fake_krea_downloads()
+        plan = self.provisioner.plan("krea2-full", self.comfy)
+
+        self.provisioner.install(plan, skip_deps=True)
+
+        self.assertEqual(set(calls), set(plan.models))
+        self.assertTrue(all(calls.count(ident) == 1 for ident in plan.models))
+        self.assertTrue(self.provisioner.profile_installation("krea2", self.comfy)["installed"])
+        self.assertTrue(self.provisioner.profile_installation("krea2-reference", self.comfy)["installed"])
+        self.assertTrue(self.provisioner.profile_installation("krea2-full", self.comfy)["installed"])
+
+    def test_krea_base_then_group_downloads_only_reference_delta(self) -> None:
+        payloads, calls = self.fake_krea_downloads()
+        self.provisioner.install(self.provisioner.plan("krea2", self.comfy), skip_deps=True)
+        calls.clear()
+
+        plan = self.provisioner.plan("krea2-full", self.comfy)
+        self.assertEqual(plan.models_to_download, ["qwen3vl-4b-bf16"])
+        self.assertIn("model:krea2-turbo-fp8", plan.reused_assets)
+        installation = self.provisioner.profile_installation("krea2-full", self.comfy)
+        self.assertEqual(installation["total_bytes"], len(payloads["qwen3vl-4b-bf16"]))
+        self.assertEqual(installation["pending_assets"], [
+            "model:qwen3vl-4b-bf16", "workflow_set:krea2-reference",
+        ])
+        self.provisioner.install(plan, skip_deps=True)
+
+        self.assertEqual(calls, ["qwen3vl-4b-bf16"])
+
+    def test_reference_assets_make_base_install_fully_incremental(self) -> None:
+        payloads, calls = self.fake_krea_downloads()
+        for ident, data in payloads.items():
+            self.write_model(ident, data)
+
+        plan = self.provisioner.plan("krea2", self.comfy)
+        self.assertEqual(plan.models_to_download, [])
+        self.provisioner.install(plan, skip_deps=True)
+
+        self.assertEqual(calls, [])
+
+    def test_krea_group_remaining_size_and_progress_exclude_reused_assets(self) -> None:
+        payloads, _calls = self.fake_krea_downloads()
+        for ident in ("krea2-turbo-fp8", "qwen3vl-4b-fp8", "qwen-image-vae"):
+            self.write_model(ident, payloads[ident])
+        reference = self.provisioner.models["qwen3vl-4b-bf16"]
+        partial = self.comfy / "models" / reference["directory"] / (reference["filename"] + ".partial")
+        partial.parent.mkdir(parents=True, exist_ok=True)
+        partial.write_bytes(payloads["qwen3vl-4b-bf16"][:4])
+        events = []
+
+        plan = self.provisioner.plan("krea2-full", self.comfy)
+        self.assertEqual(plan.estimated_bytes, len(payloads["qwen3vl-4b-bf16"]) - 4)
+
+        class RangeResponse:
+            status = 206
+            def __init__(self, data): self.data = data; self.done = False
+            def read(self, _size=-1):
+                if self.done: return b""
+                self.done = True; return self.data
+            def close(self): pass
+            def __enter__(self): return self
+            def __exit__(self, *_args): self.close()
+
+        self.provisioner.opener = lambda request, timeout: RangeResponse(
+            payloads["qwen3vl-4b-bf16"][4:],
+        )
+        self.provisioner.install(plan, skip_deps=True, progress=events.append)
+
+        planning = next(item for item in events if item["phase"] == "PLANNING_ASSETS")
+        self.assertEqual(planning["bytes_total"], len(payloads["qwen3vl-4b-bf16"]) - 4)
+        self.assertIn("model:krea2-turbo-fp8", planning["reused_assets"])
+        downloading = [item for item in events if item["phase"] == "DOWNLOADING_MODEL"][-1]
+        self.assertEqual(downloading["bytes_downloaded"], downloading["bytes_total"])
 
     def test_chatterbox_clone_reuses_tts_and_stays_independent_of_qwen(self) -> None:
         clone = self.provisioner.plan("chatterbox-voice-clone", self.comfy)
@@ -112,6 +283,37 @@ class ProvisionerTests(unittest.TestCase):
         capabilities = self.provisioner.list_capabilities()
         self.assertEqual(capabilities["text-to-speech"]["providers"], ["qwen3-tts", "chatterbox-tts"])
         self.assertIn("chatterbox-voice-clone", capabilities["voice-cloning"]["providers"])
+
+    def test_normalized_catalog_keeps_runtime_as_requirements_authority(self) -> None:
+        catalog = {item["id"]: item for item in self.provisioner.capability_catalog(self.comfy)}
+        minimax = catalog["minimax"]
+        provider = minimax["providers"][0]
+        self.assertEqual(provider["id"], "minimax-h3-fast")
+        self.assertEqual(provider["requirements"]["min_vram_mb"], 12 * 1024)
+        self.assertIn("cuda", provider["requirements"]["supported_backends"])
+        self.assertFalse(provider["installation"]["installed"])
+        self.assertFalse(minimax["operations"]["remove"])
+        self.assertEqual(catalog["krea2"]["install_group"], "krea2-full")
+        self.assertEqual(catalog["krea2-reference"]["install_group"], "krea2-full")
+        groups = {item["id"]: item for item in self.provisioner.install_group_catalog(self.comfy)}
+        self.assertEqual(groups["krea2-full"]["members"], ["krea2", "krea2-reference"])
+        self.assertEqual(groups["krea2-full"]["profile"], "krea2-full")
+
+    def test_profile_installation_is_distinct_from_manifest_availability(self) -> None:
+        status = self.provisioner.profile_installation("seedvr2", self.comfy)
+        self.assertFalse(status["installed"])
+        self.assertIn("profile_state", status["missing"])
+
+    def test_profile_provisionability_is_independent_of_execution_hardware(self) -> None:
+        value = self.provisioner.profile_provisionability("minimax-h3-fast")
+        self.assertTrue(value["installable"])
+        self.assertEqual(value["reason_codes"], [])
+
+        model = self.provisioner.models["qwen-h3-mmproj"]
+        with mock.patch.dict(model, {"url": None}):
+            unavailable = self.provisioner.profile_provisionability("qwen-h3")
+        self.assertFalse(unavailable["installable"])
+        self.assertIn("MODEL_SOURCE_UNAVAILABLE:qwen-h3-mmproj", unavailable["reason_codes"])
 
     def test_existing_profiles_and_h3_manifest_are_still_resolvable(self) -> None:
         self.assertIn("minimax-h3-fast", self.provisioner.list_profiles())

@@ -3,19 +3,32 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 ROOT = Path(__file__).resolve().parents[1]
 CHUNK = 8 * 1024 * 1024
+_DOWNLOAD_LOCKS: dict[str, threading.Lock] = {}
+_DOWNLOAD_LOCKS_GUARD = threading.Lock()
+
+Progress = Callable[[dict[str, Any]], None]
 
 class ProvisioningError(RuntimeError): pass
+_URL_CREDENTIALS = re.compile(r"(://)[^/@\s]+@")
+
+class ProvisioningCancelled(ProvisioningError):
+    """Cooperative cancellation that keeps completed and resumable assets."""
+    cancelled = True
 
 def read_json(path: Path, default: dict[str, Any] | None = None) -> dict[str, Any]:
     try: return json.loads(path.read_text(encoding="utf-8"))
@@ -56,19 +69,32 @@ class InstallPlan:
     models_to_download: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     estimated_bytes: int = 0
+    download_size_complete: bool = True
+    reused_assets: list[str] = field(default_factory=list)
+    pending_assets: list[str] = field(default_factory=list)
     def format(self) -> str:
         def part(name: str, values: list[str]) -> str: return name + "\n" + ("\n".join("  - " + x for x in values) if values else "  - nenhum")
         size = f"{self.estimated_bytes / 2**30:.2f} GiB" if self.estimated_bytes else "desconhecido"
         return "\n".join((part("PROFILE", [self.profile_id]), part("DEPENDENCIES", self.profiles[1:]), part("ALREADY INSTALLED", self.already_installed), part("TO INSTALL", self.to_install), part("MODELS TO DOWNLOAD", self.models_to_download), f"ESTIMATED DOWNLOAD/DISK\n  - {size}", part("WARNINGS", self.warnings)))
 
 class Provisioner:
-    def __init__(self, manifest_root: Path | None = None) -> None:
+    def __init__(
+        self, manifest_root: Path | None = None, *,
+        python_executable: str | Path | None = None,
+        opener=urllib.request.urlopen,
+        sleeper: Callable[[float], None] = time.sleep,
+    ) -> None:
         self.root = Path(manifest_root or ROOT / "installer")
+        self.python_executable = str(Path(python_executable or sys.executable).resolve())
+        self.opener = opener
+        self.sleeper = sleeper
         self.components = self._load("components")
         self.models = self._load("models", registry=True)
         self.workflow_sets = self._load("workflow_sets")
         self.profiles = self._load("profiles")
-        self.capabilities = read_json(self.root / "capabilities.json").get("capabilities", {})
+        capability_manifest = read_json(self.root / "capabilities.json")
+        self.capabilities = capability_manifest.get("capabilities", {})
+        self.install_groups = capability_manifest.get("install_groups", {})
     def _load(self, kind: str, registry: bool = False) -> dict[str, dict[str, Any]]:
         paths = [self.root / kind / "registry.json"] if registry else sorted((self.root / kind).glob("*.json"))
         result: dict[str, dict[str, Any]] = {}
@@ -84,6 +110,202 @@ class Provisioner:
     def list_capabilities(self) -> dict[str, dict[str, Any]]:
         """Metadados de descoberta para o EDx Studio; não instala providers."""
         return dict(sorted(self.capabilities.items()))
+    def list_install_groups(self) -> dict[str, dict[str, Any]]:
+        return dict(sorted(self.install_groups.items()))
+    def profile_requirements(self, profile_id: str) -> dict[str, Any]:
+        """Return normalized requirements derived only from trusted manifests."""
+        profiles = self._resolved_profiles(profile_id)
+        components = self._unique([
+            component for profile in profiles
+            for component in self.profiles[profile].get("components", [])
+        ])
+        models = self._unique([
+            model for profile in profiles
+            for model in self.profiles[profile].get("models", [])
+        ])
+        hardware = [self.profiles[profile].get("hardware", {}) for profile in profiles]
+        hardware.extend(self.components[item].get("hardware", {}) for item in components)
+        minimum = max((int(item.get("min_vram", 0)) for item in hardware), default=0)
+        recommended = max((int(item.get("recommended_vram", 0)) for item in hardware), default=0)
+        backend_sets = [
+            {str(backend).lower() for backend in item.get("supported_backends", [])}
+            for item in hardware if item.get("supported_backends")
+        ]
+        backends = sorted(set.intersection(*backend_sets)) if backend_sets else []
+        strategies = self._unique([
+            str(strategy)
+            for item in hardware for strategy in item.get("execution_strategies", [])
+        ])
+        known_sizes = [int(self.models[item]["size_bytes"]) for item in models if self.models[item].get("size_bytes")]
+        unknown_size_models = [item for item in models if not self.models[item].get("size_bytes")]
+        return {
+            "min_vram_mb": minimum * 1024,
+            "recommended_vram_mb": recommended * 1024,
+            "supported_backends": backends,
+            "backend_contract_declared": bool(backend_sets),
+            "backend_conflict": bool(backend_sets and not backends),
+            "execution_strategies": strategies,
+            "download_bytes": sum(known_sizes),
+            "download_size_complete": not unknown_size_models,
+            "unknown_size_models": unknown_size_models,
+            "components": components,
+            "models": models,
+            "workflow_sets": self._unique([
+                workflow for profile in profiles
+                for workflow in self.profiles[profile].get("workflow_sets", [])
+            ]),
+        }
+    def profile_provisionability(self, profile_id: str) -> dict[str, Any]:
+        """Validate whether trusted manifests can provision a profile.
+
+        This deliberately does not evaluate the current machine's GPU/VRAM;
+        provisioning assets and executing them are separate contracts.
+        """
+        reasons: list[str] = []
+        try:
+            profiles = self._resolved_profiles(profile_id)
+        except ProvisioningError:
+            return {"installable": False, "reason_codes": ["PROFILE_INVALID"]}
+        components = self._unique([
+            component for profile in profiles
+            for component in self.profiles[profile].get("components", [])
+        ])
+        models = self._unique([
+            model for profile in profiles
+            for model in self.profiles[profile].get("models", [])
+        ])
+        workflow_sets = self._unique([
+            workflow for profile in profiles
+            for workflow in self.profiles[profile].get("workflow_sets", [])
+        ])
+        for ident in components:
+            item = self.components.get(ident)
+            if not item or not item.get("source") or not (ROOT / item["source"]).is_dir():
+                reasons.append(f"COMPONENT_UNAVAILABLE:{ident}")
+        for ident in models:
+            item = self.models.get(ident)
+            if not item:
+                reasons.append(f"MODEL_UNAVAILABLE:{ident}")
+            elif item.get("install_mode") == "node-managed":
+                if not item.get("repo_id"):
+                    reasons.append(f"MODEL_SOURCE_UNAVAILABLE:{ident}")
+            elif not item.get("url"):
+                reasons.append(f"MODEL_SOURCE_UNAVAILABLE:{ident}")
+        for ident in workflow_sets:
+            item = self.workflow_sets.get(ident)
+            if not item:
+                reasons.append(f"WORKFLOW_SET_UNAVAILABLE:{ident}")
+                continue
+            for relative in item.get("workflows", []):
+                if not (ROOT / relative).is_file():
+                    reasons.append(f"WORKFLOW_UNAVAILABLE:{ident}")
+                    break
+        return {"installable": not reasons, "reason_codes": reasons}
+    def profile_installation(self, profile_id: str, comfy: Path) -> dict[str, Any]:
+        """Inspect a profile without mutating the managed ComfyUI installation."""
+        comfy = Path(comfy)
+        if not (comfy / "models").is_dir():
+            return {"installed": False, "profile_id": profile_id, "missing": ["base_runtime"]}
+        state = read_json(self._state_path(comfy), {})
+        plan = self.plan(profile_id, comfy)
+        has_profile_state = profile_id in state.get("profiles", {})
+        missing = ([] if has_profile_state else ["profile_state"])
+        missing.extend(plan.to_install)
+        missing.extend(f"model:{item}" for item in plan.models_to_download)
+        return {
+            "installed": has_profile_state and not plan.to_install and not plan.models_to_download,
+            "profile_id": profile_id,
+            "missing": missing,
+            "warnings": plan.warnings,
+            "reused_assets": plan.reused_assets,
+            "pending_assets": plan.pending_assets,
+            "downloaded_bytes": 0,
+            "total_bytes": plan.estimated_bytes if plan.download_size_complete else None,
+        }
+    def capability_catalog(self, comfy: Path | None = None) -> list[dict[str, Any]]:
+        """Normalized capability catalog consumed by orchestrators such as EDx Studio."""
+        result: list[dict[str, Any]] = []
+        for category, item in sorted(self.capabilities.items()):
+            aliases = [str(value) for value in item.get("aliases", [])]
+            providers = [str(value) for value in item.get("providers", []) if value in self.profiles]
+            profiles = []
+            for profile_id in providers:
+                profile = self.profiles[profile_id]
+                details = {
+                    "id": profile_id,
+                    "description": str(profile.get("description", "")),
+                    "requirements": self.profile_requirements(profile_id),
+                    "provisioning": self.profile_provisionability(profile_id),
+                    "warnings": list(profile.get("warnings", [])),
+                }
+                if comfy is not None:
+                    details["installation"] = self.profile_installation(profile_id, comfy)
+                profiles.append(details)
+            capability_id = aliases[0] if aliases else category
+            result.append({
+                "id": capability_id,
+                "runtime_id": category,
+                "name": str(item.get("name") or category.replace("-", " ").title()),
+                "description": str(item.get("description") or (profiles[0]["description"] if profiles else "")),
+                "category": category,
+                "aliases": aliases,
+                "providers": profiles,
+                "install_group": self._install_group_for(capability_id),
+                "operations": {
+                    "install": any(profile["provisioning"]["installable"] for profile in profiles),
+                    "repair": any(profile["provisioning"]["installable"] for profile in profiles),
+                    "remove": False,
+                },
+            })
+        return result
+    def install_group_catalog(self, comfy: Path | None = None) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        for ident, item in sorted(self.install_groups.items()):
+            profile = str(item.get("profile") or ident)
+            provisioning = self.profile_provisionability(profile)
+            details = {
+                "id": ident,
+                "name": str(item.get("name") or ident.replace("-", " ").title()),
+                "description": str(item.get("description", "")),
+                "profile": profile,
+                "members": [str(member) for member in item.get("members", [])],
+                "requirements": self.profile_requirements(profile),
+                "provisioning": provisioning,
+                "operations": {
+                    "install": provisioning["installable"],
+                    "repair": provisioning["installable"],
+                    "remove": False,
+                },
+            }
+            if comfy is not None:
+                details["installation"] = self.profile_installation(profile, comfy)
+            result.append(details)
+        return result
+    def _install_group_for(self, capability_id: str) -> str | None:
+        requested = str(capability_id).lower()
+        for ident, item in self.install_groups.items():
+            if requested in {str(member).lower() for member in item.get("members", [])}:
+                return ident
+        return None
+    def install_group_members(self, install_id: str) -> list[str]:
+        item = self.install_groups.get(str(install_id).lower())
+        return [str(member) for member in item.get("members", [])] if item else []
+    def profiles_for_capability(self, capability_id: str) -> list[str]:
+        """Resolve a trusted capability/alias/provider to declared profiles."""
+        requested = str(capability_id).strip().lower()
+        if requested in self.profiles:
+            return [requested]
+        for ident, item in self.capabilities.items():
+            names = {ident.lower(), *(str(value).lower() for value in item.get("aliases", []))}
+            providers = [str(value) for value in item.get("providers", [])]
+            if requested in names or requested in {value.lower() for value in providers}:
+                return [value for value in providers if value in self.profiles]
+        raise ProvisioningError(f"capability inexistente: {capability_id}")
+    def resolve_profile(self, capability_id: str) -> str:
+        profiles = self.profiles_for_capability(capability_id)
+        if not profiles:
+            raise ProvisioningError(f"capability sem profile instalável: {capability_id}")
+        return profiles[0]
     @staticmethod
     def _unique(items: list[str]) -> list[str]: return list(dict.fromkeys(items))
     def _resolved_profiles(self, requested: str) -> list[str]:
@@ -101,6 +323,7 @@ class Provisioner:
     def _valid_model(self, path: Path, model: dict[str, Any]) -> bool:
         if model.get("install_mode") == "node-managed": return path.is_dir() and any(path.iterdir())
         if not path.is_file() or path.stat().st_size == 0: return False
+        if model.get("size_bytes") and path.stat().st_size != int(model["size_bytes"]): return False
         return not model.get("sha256") or sha256(path) == model["sha256"]
     def plan(self, profile_id: str, comfy: Path) -> InstallPlan:
         if not (comfy / "models").is_dir(): raise ProvisioningError(f"não parece ComfyUI (models ausente): {comfy}")
@@ -115,14 +338,25 @@ class Provisioner:
         for ident in components:
             component = self.components[ident]; source = ROOT / component["source"]; target = comfy / "custom_nodes" / component["name"]; marker = target / ".edx-component.json"
             if not source.is_dir(): raise ProvisioningError(f"fonte local ausente: {component['source']}")
-            if marker.is_file() and read_json(marker).get("fingerprint") == fingerprint(source): result.already_installed.append("component:" + ident)
+            if marker.is_file() and read_json(marker).get("fingerprint") == fingerprint(source):
+                result.already_installed.append("component:" + ident); result.reused_assets.append("component:" + ident)
             elif target.exists() and not marker.exists(): result.warnings.append(f"component:{ident} já existe e não é gerenciado pelo EDx; será preservado")
-            else: result.to_install.append("component:" + ident)
+            else:
+                result.to_install.append("component:" + ident); result.pending_assets.append("component:" + ident)
         for ident in models:
             model = self.models[ident]; target = self._model_path(comfy, model)
-            if self._valid_model(target, model): result.already_installed.append("model:" + ident)
+            if self._valid_model(target, model):
+                result.already_installed.append("model:" + ident); result.reused_assets.append("model:" + ident)
             elif model.get("install_mode") == "node-managed": result.warnings.append(f"model:{ident} é baixado pelo Loader do node ({model['repo_id']})")
-            elif model.get("url"): result.models_to_download.append(ident); result.estimated_bytes += int(model.get("size_bytes", 0))
+            elif model.get("url"):
+                result.models_to_download.append(ident); result.pending_assets.append("model:" + ident)
+                size = int(model.get("size_bytes", 0))
+                if size:
+                    partial = target.with_suffix(target.suffix + ".partial")
+                    present = min(partial.stat().st_size, size) if partial.is_file() else 0
+                    result.estimated_bytes += size - present
+                else:
+                    result.download_size_complete = False
             else: result.warnings.append(f"model:{ident} sem URL conhecida; pendência documentada")
         for ident in sets:
             missing = False; destination = comfy / "user" / "default" / "workflows" / "EDx" / ident
@@ -130,10 +364,53 @@ class Provisioner:
                 source = ROOT / rel
                 if not source.is_file(): raise ProvisioningError(f"workflow ausente: {rel}")
                 missing |= not (destination / source.name).is_file()
-            (result.to_install if missing else result.already_installed).append("workflow_set:" + ident)
+            asset = "workflow_set:" + ident
+            (result.to_install if missing else result.already_installed).append(asset)
+            (result.pending_assets if missing else result.reused_assets).append(asset)
         for profile in profiles: result.warnings.extend(self.profiles[profile].get("warnings", []))
         return result
-    def _component(self, ident: str, comfy: Path, install_deps: bool, state: dict[str, Any]) -> None:
+    @staticmethod
+    def _emit(callback: Progress | None, phase: str, **details: Any) -> None:
+        if callback: callback({"phase": phase, **details})
+    @staticmethod
+    def _check_cancelled(cancel_event, message: str = "instalação cancelada") -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise ProvisioningCancelled(message)
+    @staticmethod
+    def _sanitize_command(command: list[str]) -> str:
+        parts = []
+        for part in command:
+            part = _URL_CREDENTIALS.sub(r"***@", str(part))
+            parts.append(part)
+        return " ".join(parts)
+    @staticmethod
+    def _tail(text: str, limit: int = 4000) -> str:
+        text = _URL_CREDENTIALS.sub(r"***@", text.strip())
+        return text if len(text) <= limit else "..." + text[-limit:]
+    @staticmethod
+    def _run_cancellable(command: list[str], cancel_event=None, label: str = "") -> None:
+        Provisioner._check_cancelled(cancel_event)
+        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+            process = subprocess.Popen(command, stdout=out, stderr=err)
+            while process.poll() is None:
+                if cancel_event is not None and cancel_event.wait(0.1):
+                    process.terminate()
+                    try: process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill(); process.wait()
+                    raise ProvisioningCancelled("instalação de dependências cancelada")
+                if cancel_event is None:
+                    process.wait(); break
+            if process.returncode:
+                out.seek(0); err.seek(0)
+                stdout = out.read().decode("utf-8", "replace"); stderr = err.read().decode("utf-8", "replace")
+                detail = Provisioner._tail(stderr) or Provisioner._tail(stdout)
+                message = f"{label or 'command'} setup failed (exit code {process.returncode}): {detail}\ncommand: {Provisioner._sanitize_command(command)}"
+                if stderr.strip() and stdout.strip():
+                    message += "\nstdout (tail): " + Provisioner._tail(stdout, 1500)
+                raise ProvisioningError(message)
+    def _component(self, ident: str, comfy: Path, install_deps: bool, state: dict[str, Any], progress: Progress | None = None, cancel_event=None) -> None:
+        self._check_cancelled(cancel_event)
         item = self.components[ident]; source = ROOT / item["source"]; target = comfy / "custom_nodes" / item["name"]; marker = target / ".edx-component.json"; version = fingerprint(source)
         if target.exists() and not marker.exists(): print(f"[EDx] preservando custom node externo: {target.name}"); return
         if read_json(marker).get("fingerprint") != version:
@@ -144,21 +421,119 @@ class Provisioner:
         old = state.setdefault("components", {}).get(ident, {})
         if install_deps and old.get("fingerprint") != version:
             requirements = target / "requirements.txt"
-            command = [sys.executable, "-m", "pip", "install", "-r", str(requirements)] if requirements.is_file() else [sys.executable, "-m", "pip", "install", "-e", str(target)] if (target / "pyproject.toml").is_file() else None
-            if command: subprocess.run(command, check=True)
+            # "install": "requirements" -> só requirements.txt (sem pip install -e); omitido mantém o comportamento legado.
+            method = item.get("install", "auto")
+            pip = [self.python_executable, "-m", "pip", "install"]
+            if method == "requirements": command = pip + ["-r", str(requirements)] if requirements.is_file() else None
+            elif method == "editable": command = pip + ["-e", str(target)] if (target / "pyproject.toml").is_file() else None
+            else: command = pip + ["-r", str(requirements)] if requirements.is_file() else pip + ["-e", str(target)] if (target / "pyproject.toml").is_file() else None
+            self._emit(progress, "INSTALLING_COMPONENT", component=ident)
+            if command: self._run_cancellable(command, cancel_event, item.get("name", ident))
+        self._check_cancelled(cancel_event)
         state["components"][ident] = {"version": item.get("version", "0"), "fingerprint": version, "updated_at": time.time()}
-    def _download(self, ident: str, target: Path, model: dict[str, Any]) -> None:
-        target.parent.mkdir(parents=True, exist_ok=True); partial = target.with_suffix(target.suffix + ".partial"); current = partial.stat().st_size if partial.exists() else 0
-        headers = {"User-Agent": "EDx-Provisioner/1.0"};
-        if current: headers["Range"] = f"bytes={current}-"
+    @contextmanager
+    def _asset_lock(self, target: Path, cancel_event=None):
+        """Serialize a model install across Studio processes, not only threads."""
+        lock_path = target.with_suffix(target.suffix + ".lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        while True:
+            try:
+                descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise ProvisioningCancelled("download cancelado enquanto aguardava outro provisionamento")
+                try:
+                    owner = json.loads(lock_path.read_text(encoding="utf-8"))
+                    owner_pid = int(owner.get("pid", 0))
+                    owner_alive = owner_pid > 0
+                    if owner_alive:
+                        try:
+                            os.kill(owner_pid, 0)
+                        except ProcessLookupError:
+                            owner_alive = False
+                        except PermissionError:
+                            owner_alive = True
+                        except (OSError, ValueError):
+                            owner_alive = False
+                    if not owner_alive:
+                        lock_path.unlink(missing_ok=True)
+                        continue
+                except (OSError, ValueError, json.JSONDecodeError):
+                    try:
+                        if time.time() - lock_path.stat().st_mtime > 24 * 60 * 60:
+                            lock_path.unlink(missing_ok=True)
+                            continue
+                    except OSError:
+                        continue
+                self.sleeper(0.25)
+                continue
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(json.dumps({"pid": os.getpid(), "created_at": time.time()}))
+            break
         try:
-            response = urllib.request.urlopen(urllib.request.Request(model["url"], headers=headers), timeout=120)
-            if current and getattr(response, "status", None) != 206: partial.unlink(missing_ok=True); return self._download(ident, target, model)
-            with response, partial.open("ab" if current else "wb") as stream:
-                while block := response.read(CHUNK): stream.write(block); current += len(block); print(f"[EDx] {ident}: {current / 2**20:.0f} MiB", flush=True)
-        except Exception as exc: raise ProvisioningError(f"download interrompido em {ident}; partial preservado: {exc}") from exc
-        if not self._valid_model(partial, model): raise ProvisioningError(f"download inválido para {ident}; partial preservado para retomada")
-        partial.replace(target); print(f"[EDx] modelo -> {target}")
+            yield
+        finally:
+            lock_path.unlink(missing_ok=True)
+    @contextmanager
+    def _thread_asset_lock(self, target: Path, cancel_event=None):
+        key = str(target.resolve())
+        with _DOWNLOAD_LOCKS_GUARD:
+            lock = _DOWNLOAD_LOCKS.setdefault(key, threading.Lock())
+        while not lock.acquire(timeout=0.1):
+            self._check_cancelled(
+                cancel_event, "download cancelado enquanto aguardava outro provisionamento",
+            )
+        try:
+            yield
+        finally:
+            lock.release()
+
+    def _download(self, ident: str, target: Path, model: dict[str, Any], *, progress: Progress | None = None, cancel_event=None, retries: int = 3) -> bool:
+        with self._thread_asset_lock(target, cancel_event), self._asset_lock(target, cancel_event):
+            self._check_cancelled(cancel_event, f"download cancelado antes de {ident}")
+            if self._valid_model(target, model): return False
+            target.parent.mkdir(parents=True, exist_ok=True)
+            partial = target.with_suffix(target.suffix + ".partial")
+            expected = int(model.get("size_bytes", 0)) or None
+            for attempt in range(max(1, retries)):
+                self._check_cancelled(cancel_event, f"download cancelado antes de {ident}")
+                current = partial.stat().st_size if partial.exists() else 0
+                headers = {"User-Agent": "EDx-Provisioner/2.0"}
+                if current: headers["Range"] = f"bytes={current}-"
+                self._emit(progress, "DOWNLOADING_MODEL", asset=ident, bytes_downloaded=current, bytes_total=expected, progress=(current / expected if expected else None))
+                try:
+                    response = self.opener(urllib.request.Request(model["url"], headers=headers), timeout=120)
+                    if current and getattr(response, "status", None) != 206:
+                        partial.unlink(missing_ok=True); current = 0
+                        response.close()
+                        response = self.opener(urllib.request.Request(model["url"], headers={"User-Agent": "EDx-Provisioner/2.0"}), timeout=120)
+                    with response, partial.open("ab" if current else "wb") as stream:
+                        while block := response.read(CHUNK):
+                            if cancel_event is not None and cancel_event.is_set():
+                                raise ProvisioningCancelled(f"download cancelado em {ident}; partial preservado")
+                            stream.write(block); current += len(block)
+                            self._emit(progress, "DOWNLOADING_MODEL", asset=ident, bytes_downloaded=current, bytes_total=expected, progress=(min(1.0, current / expected) if expected else None))
+                    self._emit(
+                        progress, "VERIFYING_ASSET", asset=ident,
+                        bytes_downloaded=current, bytes_total=expected,
+                        progress=(min(1.0, current / expected) if expected else None),
+                    )
+                    if not self._valid_model(partial, model):
+                        partial.unlink(missing_ok=True)
+                        raise ProvisioningError(f"download inválido para {ident}")
+                    os.replace(partial, target)
+                    self._emit(
+                        progress, "ASSET_READY", asset=ident,
+                        bytes_downloaded=current, bytes_total=expected,
+                        progress=(1.0 if expected else None),
+                    )
+                    return True
+                except ProvisioningError:
+                    raise
+                except Exception as exc:
+                    if attempt + 1 >= max(1, retries):
+                        raise ProvisioningError(f"download interrompido em {ident}; partial preservado") from exc
+                    self.sleeper(min(8.0, 0.5 * (2 ** attempt)))
     def _workflows(self, ident: str, comfy: Path, state: dict[str, Any]) -> None:
         destination = comfy / "user" / "default" / "workflows" / "EDx" / ident; destination.mkdir(parents=True, exist_ok=True); records = state.setdefault("workflows", {})
         for rel in self.workflow_sets[ident].get("workflows", []):
@@ -166,14 +541,88 @@ class Provisioner:
             if target.exists() and known and known.get("hash") != sha256(target): print(f"[EDx] preservando workflow editado: {target.name}"); continue
             if not target.exists() or sha256(target) != source_hash: shutil.copy2(source, target); print(f"[EDx] workflow -> {target}")
             records[str(target)] = {"workflow_set": ident, "source": rel, "hash": source_hash, "updated_at": time.time()}
-    def install(self, plan: InstallPlan, *, skip_models: bool = False, skip_deps: bool = False) -> None:
+    def install(
+        self, plan: InstallPlan, *, skip_models: bool = False,
+        skip_deps: bool = False, progress: Progress | None = None,
+        cancel_event=None, before_commit: Callable[[], None] | None = None,
+    ) -> None:
         state_path = self._state_path(plan.comfy); state = read_json(state_path, {"schema_version": 1, "profiles": {}, "components": {}, "models": {}, "workflows": {}})
-        for ident in plan.components: self._component(ident, plan.comfy, not skip_deps, state)
+        self._check_cancelled(cancel_event)
+        pending_models = [
+            ident for ident in plan.models
+            if self.models[ident].get("url")
+            and not self._valid_model(self._model_path(plan.comfy, self.models[ident]), self.models[ident])
+        ]
+        baselines: dict[str, int] = {}
+        remaining_sizes: dict[str, int | None] = {}
+        for ident in pending_models:
+            model = self.models[ident]; target = self._model_path(plan.comfy, model)
+            expected = int(model.get("size_bytes", 0))
+            partial = target.with_suffix(target.suffix + ".partial")
+            baseline = min(partial.stat().st_size, expected) if expected and partial.is_file() else 0
+            baselines[ident] = baseline
+            remaining_sizes[ident] = expected - baseline if expected else None
+        download_size_complete = all(value is not None for value in remaining_sizes.values())
+        remaining_total = (
+            sum(int(value or 0) for value in remaining_sizes.values())
+            if download_size_complete else None
+        )
+        live_reused = list(plan.reused_assets)
+        live_pending = list(plan.pending_assets)
+        for ident in plan.models:
+            asset = "model:" + ident
+            valid = self._valid_model(self._model_path(plan.comfy, self.models[ident]), self.models[ident])
+            if valid:
+                if asset not in live_reused: live_reused.append(asset)
+                if asset in live_pending: live_pending.remove(asset)
+            elif self.models[ident].get("url") and asset not in live_pending:
+                live_pending.append(asset)
+        self._emit(
+            progress, "PLANNING_ASSETS", reused_assets=live_reused,
+            pending_assets=live_pending, bytes_downloaded=0,
+            bytes_total=remaining_total,
+            progress=(0.0 if remaining_total else None),
+        )
+        for ident in plan.components:
+            self._component(ident, plan.comfy, not skip_deps, state, progress, cancel_event)
         if not skip_models:
+            pending_positions = {ident: index for index, ident in enumerate(pending_models, 1)}
+            completed_bytes = 0
             for ident in plan.models:
+                self._check_cancelled(cancel_event)
                 model = self.models[ident]; target = self._model_path(plan.comfy, model)
-                if model.get("url") and not self._valid_model(target, model): self._download(ident, target, model)
+                if model.get("url") and not self._valid_model(target, model):
+                    def model_progress(event: dict[str, Any], *, _ident=ident) -> None:
+                        if progress:
+                            current = max(0, int(event.get("bytes_downloaded") or 0) - baselines.get(_ident, 0))
+                            total = remaining_total
+                            aggregate = completed_bytes + current
+                            progress({
+                                **event,
+                                "current_asset": _ident,
+                                "bytes_downloaded": aggregate,
+                                "bytes_total": total,
+                                "progress": (min(1.0, aggregate / total) if total else None),
+                                "reused_assets": live_reused,
+                                "pending_assets": live_pending,
+                                "model_index": pending_positions[_ident],
+                                "model_total": len(pending_models),
+                            })
+                    downloaded = self._download(ident, target, model, progress=model_progress, cancel_event=cancel_event)
+                    if downloaded is not False and remaining_sizes.get(ident) is not None:
+                        completed_bytes += int(remaining_sizes[ident] or 0)
                 if self._valid_model(target, model): state.setdefault("models", {})[ident] = {"version": model.get("version", "0"), "path": str(target), "updated_at": time.time()}
-        for ident in plan.workflow_sets: self._workflows(ident, plan.comfy, state)
-        state.setdefault("profiles", {})[plan.profile_id] = {"version": self.profiles[plan.profile_id].get("version", "0"), "resolved_profiles": plan.profiles, "provisioned_at": time.time()}
+        for ident in plan.workflow_sets:
+            self._check_cancelled(cancel_event)
+            self._emit(progress, "INSTALLING_COMPONENT", component=f"workflow:{ident}")
+            self._workflows(ident, plan.comfy, state)
+        self._check_cancelled(cancel_event)
+        if before_commit:
+            before_commit()
+        for profile_id in plan.profiles:
+            state.setdefault("profiles", {})[profile_id] = {
+                "version": self.profiles[profile_id].get("version", "0"),
+                "resolved_profiles": self._resolved_profiles(profile_id),
+                "provisioned_at": time.time(),
+            }
         write_json(state_path, state); print(f"[EDx] perfil {plan.profile_id} provisionado. Reinicie o ComfyUI.")
