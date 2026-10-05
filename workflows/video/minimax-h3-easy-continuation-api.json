@@ -24,7 +24,7 @@
   "4": {
     "class_type": "VAELoader",
     "inputs": {
-      "vae_name": "MiniMax-H3-video_vae_fp16.safetensors"
+      "vae_name": "minimax_h3_video_vae_fp16.safetensors"
     }
   },
   "5": {

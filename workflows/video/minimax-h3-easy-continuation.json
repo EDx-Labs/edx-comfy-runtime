@@ -142,7 +142,7 @@
         "ver": "0.34.0"
       },
       "widgets_values": [
-        "MiniMax-H3-video_vae_fp16.safetensors"
+        "minimax_h3_video_vae_fp16.safetensors"
       ]
     },
     {

@@ -85,6 +85,7 @@ class ProvisionerTests(unittest.TestCase):
     def test_high_reuses_fast_filesystem_resources(self) -> None:
         self.provisioner.models["qwen3vl-4b-fp8"].pop("size_bytes", None)
         self.provisioner.models["qwen3vl-4b-fp8"].pop("sha256", None)
+        for stub in ("size_bytes", "sha256"): self.provisioner.models["minimax-video-vae"].pop(stub, None)  # arquivos de teste são placeholders
         fast = self.provisioner.plan("minimax-h3-fast", self.comfy)
         for component_id in fast.components:
             component = self.provisioner.components[component_id]
@@ -321,3 +322,34 @@ class ProvisionerTests(unittest.TestCase):
 
 
 if __name__ == "__main__": unittest.main()
+
+
+class MinimaxVideoVaeDefinitionTests(unittest.TestCase):
+    """Regressão do HTTP 404: filename/URL devem apontar para o arquivo que existe no repositório upstream."""
+
+    def setUp(self) -> None:
+        self.provisioner = Provisioner()
+        self.model = self.provisioner.models["minimax-video-vae"]
+
+    def test_url_is_well_formed_and_matches_filename(self) -> None:
+        from urllib.parse import urlparse
+        url = urlparse(self.model["url"])
+        self.assertEqual((url.scheme, url.netloc), ("https", "huggingface.co"))
+        self.assertEqual(url.path, "/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_video_vae_fp16.safetensors")
+        self.assertEqual(url.path.rsplit("/", 1)[-1], self.model["filename"])
+        self.assertEqual(self.model["directory"], "vae")
+
+    def test_integrity_metadata_is_present(self) -> None:
+        self.assertEqual(self.model["size_bytes"], 5207808496)
+        self.assertRegex(self.model["sha256"], r"^[0-9a-f]{64}$")
+
+    def test_minimax_profile_still_resolves_the_asset(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "models").mkdir()
+            plan = self.provisioner.plan("minimax-h3-fast", Path(directory))
+        self.assertIn("minimax-video-vae", plan.models)
+        self.assertIn("minimax-video-vae", plan.models_to_download)
+
+    def test_every_registry_url_ends_with_its_filename(self) -> None:
+        for ident, item in self.provisioner.models.items():
+            if item.get("url"): self.assertEqual(item["url"].rsplit("/", 1)[-1], item["filename"], ident)

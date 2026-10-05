@@ -13,7 +13,7 @@ from installer.provisioning import Provisioner
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / "workflows" / "video" / "minimax-h3-easy-continuation-api.json"
 VISUAL_WORKFLOW = ROOT / "workflows" / "video" / "minimax-h3-easy-continuation.json"
-API_SHA256 = "f0fe2c225a4e271faf6146d73b7b5d7e68bf191a0bacdb3b50f2b47d3ae69c82"
+API_SHA256 = "526205d20fc21c271c970d29259dc8d01e9d6d316060e338814f41fbc68a1cb4"
 BASELINE_WORKFLOW = (
     ROOT
     / "integrations"
