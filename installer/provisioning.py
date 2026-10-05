@@ -40,6 +40,13 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
     temporary.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
     temporary.replace(path)
 
+_VALIDATION_WRITE_LOCK = threading.Lock()
+_HASH_LOCKS: dict[str, threading.Lock] = {}
+_HASH_LOCKS_GUARD = threading.Lock()
+
+def _hash_lock(path: Path) -> threading.Lock:
+    with _HASH_LOCKS_GUARD: return _HASH_LOCKS.setdefault(str(path), threading.Lock())
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -320,11 +327,46 @@ class Provisioner:
         visit(requested); return list(reversed(ordered))
     def _state_path(self, comfy: Path) -> Path: return comfy / "user" / "default" / "EDx" / "provisioning-state.json"
     def _model_path(self, comfy: Path, model: dict[str, Any]) -> Path: return comfy / "models" / model["directory"] / model["filename"]
-    def _valid_model(self, path: Path, model: dict[str, Any]) -> bool:
+    @staticmethod
+    def _validation_cache_path(path: Path) -> Path | None:
+        # <comfy>/models/... -> <comfy>/user/default/EDx/model-validation.json
+        for parent in path.parents:
+            if parent.name == "models": return parent.parent / "user" / "default" / "EDx" / "model-validation.json"
+        return None
+    @staticmethod
+    def _file_stamp(path: Path) -> dict[str, int]:
+        info = path.stat(); return {"size": info.st_size, "mtime_ns": info.st_mtime_ns}
+    def _cached_valid(self, path: Path, model: dict[str, Any]) -> bool:
+        cache = self._validation_cache_path(path)
+        if cache is None: return False
+        entry = read_json(cache, {}).get("models", {}).get(str(path))
+        return bool(entry) and entry.get("sha256") == model["sha256"] and {k: entry.get(k) for k in ("size", "mtime_ns")} == self._file_stamp(path)
+    def _remember_model(self, path: Path, model: dict[str, Any]) -> None:
+        """Persist a successful SHA-256 validation (atomic write) keyed by path + size + mtime_ns."""
+        cache = self._validation_cache_path(path)
+        if cache is None or not model.get("sha256") or not path.is_file(): return
+        with _VALIDATION_WRITE_LOCK:
+            data = read_json(cache, {"schema_version": 1, "models": {}}); data.setdefault("models", {})
+            data["models"][str(path)] = {"sha256": model["sha256"], "size_bytes": model.get("size_bytes"), **self._file_stamp(path), "validated_at": time.time()}
+            write_json(cache, data)
+    def _forget_model(self, path: Path) -> None:
+        cache = self._validation_cache_path(path)
+        if cache is None: return
+        with _VALIDATION_WRITE_LOCK:
+            data = read_json(cache, {})
+            if data.get("models", {}).pop(str(path), None) is not None: write_json(cache, data)
+    def _valid_model(self, path: Path, model: dict[str, Any], *, force: bool = False, record: bool = True) -> bool:
+        """force=True ignora o cache e relê o arquivo (install/repair); record=False não persiste (ex.: .partial)."""
         if model.get("install_mode") == "node-managed": return path.is_dir() and any(path.iterdir())
         if not path.is_file() or path.stat().st_size == 0: return False
         if model.get("size_bytes") and path.stat().st_size != int(model["size_bytes"]): return False
-        return not model.get("sha256") or sha256(path) == model["sha256"]
+        if not model.get("sha256"): return True
+        if not force and self._cached_valid(path, model): return True
+        with _hash_lock(path):  # single-flight: consultas simultâneas aguardam o mesmo hash
+            if not force and self._cached_valid(path, model): return True
+            if sha256(path) != model["sha256"]: self._forget_model(path); return False
+            if record: self._remember_model(path, model)
+            return True
     def plan(self, profile_id: str, comfy: Path) -> InstallPlan:
         if not (comfy / "models").is_dir(): raise ProvisioningError(f"não parece ComfyUI (models ausente): {comfy}")
         profiles = self._resolved_profiles(profile_id)
@@ -518,10 +560,11 @@ class Provisioner:
                         bytes_downloaded=current, bytes_total=expected,
                         progress=(min(1.0, current / expected) if expected else None),
                     )
-                    if not self._valid_model(partial, model):
+                    if not self._valid_model(partial, model, force=True, record=False):
                         partial.unlink(missing_ok=True)
                         raise ProvisioningError(f"download inválido para {ident}")
                     os.replace(partial, target)
+                    self._remember_model(target, model)  # reaproveita o SHA já verificado do .partial
                     self._emit(
                         progress, "ASSET_READY", asset=ident,
                         bytes_downloaded=current, bytes_total=expected,
@@ -545,13 +588,14 @@ class Provisioner:
         self, plan: InstallPlan, *, skip_models: bool = False,
         skip_deps: bool = False, progress: Progress | None = None,
         cancel_event=None, before_commit: Callable[[], None] | None = None,
+        force_verify: bool = False,
     ) -> None:
         state_path = self._state_path(plan.comfy); state = read_json(state_path, {"schema_version": 1, "profiles": {}, "components": {}, "models": {}, "workflows": {}})
         self._check_cancelled(cancel_event)
         pending_models = [
             ident for ident in plan.models
             if self.models[ident].get("url")
-            and not self._valid_model(self._model_path(plan.comfy, self.models[ident]), self.models[ident])
+            and not self._valid_model(self._model_path(plan.comfy, self.models[ident]), self.models[ident], force=force_verify)
         ]
         baselines: dict[str, int] = {}
         remaining_sizes: dict[str, int | None] = {}
