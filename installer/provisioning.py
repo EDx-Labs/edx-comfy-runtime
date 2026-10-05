@@ -66,12 +66,35 @@ def fingerprint(directory: Path) -> str:
     return digest.hexdigest()
 
 def link_or_copy(source: str, target: str) -> str:
-    """Evita duplicar bytes locais; fallback seguro para outro volume/FS."""
-    try:
-        os.link(source, target)
-    except OSError:
-        shutil.copy2(source, target)
+    """Evita duplicar bytes locais; fallback seguro para outro volume/FS. Idempotente sobre arquivos já existentes."""
+    if os.path.lexists(target):
+        try:
+            if os.path.samefile(source, target): return target  # já é o mesmo arquivo físico (hardlink/junction/symlink)
+        except OSError: pass
+        temporary = target + ".edx-tmp"
+        try: os.unlink(temporary)
+        except FileNotFoundError: pass
+        _link_or_copy_new(source, temporary)
+        os.replace(temporary, target)  # não escreve "através" de um hardlink que outro arquivo compartilha
+        return target
+    _link_or_copy_new(source, target)
     return target
+
+def _link_or_copy_new(source: str, target: str) -> None:
+    try: os.link(source, target)
+    except OSError: shutil.copy2(source, target)
+
+def _local_files(directory: Path):
+    for item in sorted(directory.rglob("*")):
+        if item.is_file() and ".git" not in item.parts and "__pycache__" not in item.parts and item.suffix != ".pyc": yield item
+
+def same_physical_tree(source: Path, target: Path) -> bool:
+    """True se todo arquivo da fonte já é fisicamente o mesmo arquivo no destino (hardlinks / link de desenvolvimento)."""
+    try:
+        if not target.is_dir(): return False
+        if os.path.samefile(source, target): return True
+        return all((target / item.relative_to(source)).is_file() and os.path.samefile(item, target / item.relative_to(source)) for item in _local_files(source))
+    except OSError: return False
 
 @dataclass
 class InstallPlan:
@@ -385,7 +408,7 @@ class Provisioner:
         for ident in components:
             component = self.components[ident]; source = ROOT / component["source"]; target = comfy / "custom_nodes" / component["name"]; marker = target / ".edx-component.json"
             if not source.is_dir(): raise ProvisioningError(f"fonte local ausente: {component['source']}")
-            if marker.is_file() and read_json(marker).get("fingerprint") == fingerprint(source):
+            if (marker.is_file() and read_json(marker).get("fingerprint") == fingerprint(source)) or (marker.is_file() and same_physical_tree(source, target)) or (target.exists() and os.path.samefile(source, target)):
                 result.already_installed.append("component:" + ident); result.reused_assets.append("component:" + ident)
             elif target.exists() and not marker.exists(): result.warnings.append(f"component:{ident} já existe e não é gerenciado pelo EDx; será preservado")
             else:
@@ -459,8 +482,13 @@ class Provisioner:
     def _component(self, ident: str, comfy: Path, install_deps: bool, state: dict[str, Any], progress: Progress | None = None, cancel_event=None) -> None:
         self._check_cancelled(cancel_event)
         item = self.components[ident]; source = ROOT / item["source"]; target = comfy / "custom_nodes" / item["name"]; marker = target / ".edx-component.json"; version = fingerprint(source)
-        if target.exists() and not marker.exists(): print(f"[EDx] preservando custom node externo: {target.name}"); return
-        if read_json(marker).get("fingerprint") != version:
+        dev_link = target.exists() and os.path.samefile(source, target)  # junction/symlink de desenvolvimento: o destino É a fonte
+        if target.exists() and not marker.exists() and not dev_link: print(f"[EDx] preservando custom node externo: {target.name}"); return
+        if dev_link: print(f"[EDx] component local ligado à fonte (dev) -> {target}")
+        elif read_json(marker).get("fingerprint") != version and same_physical_tree(source, target):
+            # fonte mudou desde o marcador, mas o destino já são os mesmos arquivos (hardlinks): só atualiza o marcador
+            write_json(marker, {"component": ident, "version": item.get("version", "0"), "fingerprint": version, "installed_at": time.time()})
+        elif read_json(marker).get("fingerprint") != version:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(source, target, dirs_exist_ok=True, copy_function=link_or_copy,
                             ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
