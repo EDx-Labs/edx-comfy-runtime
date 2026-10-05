@@ -10,6 +10,8 @@ import sys
 import tempfile
 import threading
 import time
+import http.client
+import urllib.error
 import urllib.request
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -29,6 +31,9 @@ _URL_CREDENTIALS = re.compile(r"(://)[^/@\s]+@")
 class ProvisioningCancelled(ProvisioningError):
     """Cooperative cancellation that keeps completed and resumable assets."""
     cancelled = True
+
+class _TruncatedDownload(OSError):
+    """Resposta terminou antes de size_bytes; transitória, partial é mantido."""
 
 def read_json(path: Path, default: dict[str, Any] | None = None) -> dict[str, Any]:
     try: return json.loads(path.read_text(encoding="utf-8"))
@@ -530,22 +535,39 @@ class Provisioner:
         finally:
             lock.release()
 
+    TRANSIENT_HTTP = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+    @classmethod
+    def _is_transient(cls, exc: BaseException) -> bool:
+        """Falha de rede que vale uma nova tentativa; HTTP 4xx definitivo (404/401/403...) não."""
+        if isinstance(exc, urllib.error.HTTPError): return exc.code in cls.TRANSIENT_HTTP
+        return isinstance(exc, (urllib.error.URLError, OSError, TimeoutError, ConnectionError, http.client.HTTPException, _TruncatedDownload))
+
+    def _backoff(self, delay: float, cancel_event=None) -> None:
+        """Espera do retry; acorda imediatamente no cancelamento."""
+        if cancel_event is None: self.sleeper(delay)
+        elif cancel_event.wait(delay): raise ProvisioningCancelled("download cancelado durante a espera de retry; partial preservado")
+
     def _download(self, ident: str, target: Path, model: dict[str, Any], *, progress: Progress | None = None, cancel_event=None, retries: int = 3) -> bool:
+        attempts = max(1, retries)
         with self._thread_asset_lock(target, cancel_event), self._asset_lock(target, cancel_event):
             self._check_cancelled(cancel_event, f"download cancelado antes de {ident}")
             if self._valid_model(target, model): return False
             target.parent.mkdir(parents=True, exist_ok=True)
             partial = target.with_suffix(target.suffix + ".partial")
             expected = int(model.get("size_bytes", 0)) or None
-            for attempt in range(max(1, retries)):
+            for attempt in range(attempts):
                 self._check_cancelled(cancel_event, f"download cancelado antes de {ident}")
                 current = partial.stat().st_size if partial.exists() else 0
+                if expected and current > expected: partial.unlink(missing_ok=True); current = 0
                 headers = {"User-Agent": "EDx-Provisioner/2.0"}
                 if current: headers["Range"] = f"bytes={current}-"
-                self._emit(progress, "DOWNLOADING_MODEL", asset=ident, bytes_downloaded=current, bytes_total=expected, progress=(current / expected if expected else None))
+                info = {"attempt": attempt + 1, "max_attempts": attempts}
+                self._emit(progress, "DOWNLOADING_MODEL", asset=ident, bytes_downloaded=current, bytes_total=expected, progress=(current / expected if expected else None), **info)
                 try:
                     response = self.opener(urllib.request.Request(model["url"], headers=headers), timeout=120)
-                    if current and getattr(response, "status", None) != 206:
+                    if current and not self._resumes_at(response, current):
+                        # servidor ignorou/alterou o Range: reinicia o asset do zero (sem fingir resume)
                         partial.unlink(missing_ok=True); current = 0
                         response.close()
                         response = self.opener(urllib.request.Request(model["url"], headers={"User-Agent": "EDx-Provisioner/2.0"}), timeout=120)
@@ -554,7 +576,9 @@ class Provisioner:
                             if cancel_event is not None and cancel_event.is_set():
                                 raise ProvisioningCancelled(f"download cancelado em {ident}; partial preservado")
                             stream.write(block); current += len(block)
-                            self._emit(progress, "DOWNLOADING_MODEL", asset=ident, bytes_downloaded=current, bytes_total=expected, progress=(min(1.0, current / expected) if expected else None))
+                            self._emit(progress, "DOWNLOADING_MODEL", asset=ident, bytes_downloaded=current, bytes_total=expected, progress=(min(1.0, current / expected) if expected else None), **info)
+                    if expected and current < expected:
+                        raise _TruncatedDownload(f"conexão encerrada em {current}/{expected} bytes")  # mantém o partial para resume
                     self._emit(
                         progress, "VERIFYING_ASSET", asset=ident,
                         bytes_downloaded=current, bytes_total=expected,
@@ -571,12 +595,23 @@ class Provisioner:
                         progress=(1.0 if expected else None),
                     )
                     return True
-                except ProvisioningError:
+                except (ProvisioningError, ProvisioningCancelled):
                     raise
                 except Exception as exc:
-                    if attempt + 1 >= max(1, retries):
+                    if not self._is_transient(exc):
+                        raise ProvisioningError(f"download de {ident} falhou sem possibilidade de retry: {exc}") from exc
+                    if attempt + 1 >= attempts:
                         raise ProvisioningError(f"download interrompido em {ident}; partial preservado") from exc
-                    self.sleeper(min(8.0, 0.5 * (2 ** attempt)))
+                    delay = min(8.0, 0.5 * (2 ** attempt))
+                    self._emit(progress, "DOWNLOADING_MODEL", asset=ident, bytes_downloaded=current, bytes_total=expected, progress=(current / expected if expected else None), retry_in=delay, message=f"Falha transitória; nova tentativa em {delay:g}s", **info)
+                    self._backoff(delay, cancel_event)
+    @staticmethod
+    def _resumes_at(response: Any, offset: int) -> bool:
+        if getattr(response, "status", None) != 206: return False
+        content_range = getattr(response, "headers", None) and response.headers.get("Content-Range")
+        if not content_range: return True  # 206 sem header (servidores simples/mocks): confia no status
+        match = re.match(r"bytes (\d+)-", content_range)
+        return bool(match) and int(match.group(1)) == offset
     def _workflows(self, ident: str, comfy: Path, state: dict[str, Any]) -> None:
         destination = comfy / "user" / "default" / "workflows" / "EDx" / ident; destination.mkdir(parents=True, exist_ok=True); records = state.setdefault("workflows", {})
         for rel in self.workflow_sets[ident].get("workflows", []):
