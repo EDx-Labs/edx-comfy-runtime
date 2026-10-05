@@ -19,6 +19,8 @@ The user payload should be a JSON object with:
 - `window`: optional `{ "index": integer, "count": integer, "overlap_scene_ids": [string] }`.
 - `entity_registry`: optional entities already established by earlier windows. Reuse their IDs when names, explicit aliases, and narrative evidence identify the same entity.
 - `style_presets`: optional objects with `id`, `name`, and `prompt`. Reuse one only when it genuinely fits.
+- `selected_style`: optional `{ "id", "name", "prompt" }` or `null`, at the root (a style common to the window) and/or on each scene. It is an explicit user choice, resolved by the caller. Absent or `null` means no selection.
+- `style_instructions`: optional caller rules about respecting `selected_style`.
 
 If the caller supplies prose rather than this envelope, treat it as a single `full` analysis and create stable, descriptive scene IDs only when no IDs exist.
 
@@ -41,6 +43,8 @@ Return exactly one style decision:
 - `new`: use `preset_id: null` and propose one coherent style only when no supplied preset is suitable.
 
 Do not propose a near-duplicate of an existing preset. Base the decision on the script and explain it briefly in `reason`.
+
+When `selected_style` is present (root, or the same non-null style on every scene that has one), it is the user's explicit choice: return `reuse` with its `id` as `preset_id` and its `name`/`prompt` copied faithfully. Do not pick another preset, propose a `new` style, or a near-duplicate of it; `reason` may simply cite the selection. A scene's own non-null `selected_style` is the style for that scene. Use it as planning context for composition, framing, lighting, environment, materials, visual elements, and overall coherence. `image_prompt` must still concretely describe the scene's still visual and need not copy `selected_style.prompt`, because the application adds the StylePreset to the final image prompt. Style stays separate from characters, objects, environments, reference assets, START, and END. When `selected_style` is absent or `null`, the rules above apply unchanged.
 
 ## Scene planning rules
 
