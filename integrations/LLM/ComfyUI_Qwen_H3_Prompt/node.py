@@ -23,11 +23,15 @@ from .runtime import LlamaServerManager
 from .text_task import (
     MODEL_LABEL,
     RESPONSE_FORMATS,
+    ContextExceededError,
+    RuntimeConfigError,
     StructuredOutputError,
     TextTaskInputError,
     build_envelope,
     build_messages,
     build_response_format,
+    ensure_fits_context,
+    resolve_inference_options,
 )
 from .skills import (
     SKILL_NAMES,
@@ -778,10 +782,17 @@ class QwenTextTask(io.ComfyNode):
                 vision_model, max_tokens, temperature, seed, force_unload_model, started,
             )
         except Exception as error:  # noqa: BLE001
+            details = None
             if isinstance(error, (TextTaskInputError, FileNotFoundError)):
                 code = "INVALID_REQUEST"
             elif isinstance(error, StructuredOutputError):
                 code = "INVALID_STRUCTURED_OUTPUT"
+            elif isinstance(error, ContextExceededError):
+                code, details = "CONTEXT_EXCEEDED", error.details()
+            elif isinstance(error, RuntimeConfigError):
+                code = "RUNTIME_CONFIG_INVALID"
+            elif "exceed_context_size" in str(error):  # llama.cpp itself refused an oversized prompt
+                code = "CONTEXT_EXCEEDED"
             else:
                 code = "MODEL_EXECUTION_FAILED"
             _failure(f"[Qwen Text Task] {code}: {error}")
@@ -791,7 +802,7 @@ class QwenTextTask(io.ComfyNode):
             except Exception:  # noqa: BLE001
                 pass
             envelope = {"schema": "edx.text-task.result/v1", "ok": False,
-                        "error": {"code": code, "message": str(error)}}
+                        "error": {"code": code, "message": str(error), **({"details": details} if details else {})}}
         payload = json.dumps(envelope, ensure_ascii=False)
         return io.NodeOutput(payload, ui={"edx_text_task": [payload]})
 
@@ -800,12 +811,18 @@ class QwenTextTask(io.ComfyNode):
              vision_model, max_tokens, temperature, seed, force_unload_model, started):
         messages = build_messages(instructions, user_input)
         fmt = build_response_format(response_format, json_schema)
+        options = resolve_inference_options()
         model = _ensure_model_available(llm_model)
         projector = _ensure_model_available(vision_model)
         with INFERENCE_LOCK:
             comfy.model_management.unload_all_models()
             comfy.model_management.soft_empty_cache()
-            server, _ = SERVER_MANAGER.acquire(model, projector)
+            server, _ = SERVER_MANAGER.acquire(
+                model, projector,
+                context_size=options["context_size"], fit_target_mib=options["fit_target_mib"],
+            )
+            prompt_tokens = server.count_prompt_tokens(messages)
+            ensure_fits_context(prompt_tokens, max_tokens, server.context_size)
             settings = _sampling_settings(False)
             settings["temperature"] = temperature
             text, usage = server.chat(
@@ -815,7 +832,8 @@ class QwenTextTask(io.ComfyNode):
             envelope = build_envelope(
                 text, response_format=response_format, usage=usage, model=MODEL_LABEL,
                 backend=server.backend, seed=seed, max_tokens=max_tokens,
-                elapsed_s=time.perf_counter() - started,
+                elapsed_s=time.perf_counter() - started, context_size=server.context_size,
+                fit_target_mib=server.effective_fit_target_mib, prompt_tokens=prompt_tokens,
             )
             if force_unload_model:
                 _release_node_resources()

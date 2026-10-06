@@ -36,6 +36,8 @@ MODEL_EXECUTION_FAILED = "MODEL_EXECUTION_FAILED"
 INVALID_STRUCTURED_OUTPUT = "INVALID_STRUCTURED_OUTPUT"
 INVALID_RESULT = "INVALID_RESULT"
 TIMEOUT = "TIMEOUT"
+CONTEXT_EXCEEDED = "CONTEXT_EXCEEDED"
+RUNTIME_CONFIG_INVALID = "RUNTIME_CONFIG_INVALID"
 CANCELLED = "CANCELLED"
 
 
@@ -227,7 +229,7 @@ class TextTaskClient:
             error = envelope.get("error") or {}
             raise TextTaskError(
                 error.get("code") or MODEL_EXECUTION_FAILED, error.get("message") or "text task failed",
-                details={"prompt_id": prompt_id},
+                details={"prompt_id": prompt_id, **(error.get("details") or {})},
             )
         metadata = dict(envelope.get("metadata") or {})
         metadata["prompt_id"] = prompt_id

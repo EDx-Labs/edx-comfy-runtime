@@ -15,6 +15,7 @@ from typing import Callable
 NODE_ROOT = Path(__file__).resolve().parent
 RUNTIME_CONFIG_PATH = NODE_ROOT / "runtime_config.json"
 LLAMA_SEED_MODULUS = 0xFFFFFFFF
+DEFAULT_CONTEXT_SIZE = 32768  # multimodal H3 default; text tasks pass their own value
 def normalize_llama_seed(seed: int) -> int:
     """Map ComfyUI's uint64 seed to llama.cpp's deterministic uint32 range."""
     return int(seed) % LLAMA_SEED_MODULUS
@@ -122,13 +123,15 @@ class LlamaServer:
     def __init__(
         self,
         model: Path,
-        mmproj: Path,
-        context_size: int = 32768,
+        mmproj: Path | None,
+        context_size: int = DEFAULT_CONTEXT_SIZE,
         runtime_spec: RuntimeSpec | None = None,
+        fit_target_mib: int | None = None,
     ):
         self.model = model
-        self.mmproj = mmproj
+        self.mmproj = mmproj  # None = text-only model (no vision projector)
         self.context_size = context_size
+        self.fit_target_mib_override = fit_target_mib
         self.runtime_spec = runtime_spec or load_runtime_spec()
         self.executable = self.runtime_spec.executable
         # Keep the child working directory outside the runtime payload. Some Windows
@@ -174,48 +177,7 @@ class LlamaServer:
                 f"Run {installer} from the custom node directory."
             )
         self.log = tempfile.TemporaryFile(mode="w+b")  # noqa: SIM115
-        arguments = [
-            str(self.executable),
-            "--model",
-            str(self.model),
-            "--mmproj",
-            str(self.mmproj),
-            "--alias",
-            "qwen3.8-27b",
-            "--api-key",
-            "comfyui-local",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(self.port),
-            "--ctx-size",
-            str(self.context_size),
-            "--parallel",
-            "1",
-            "--n-gpu-layers",
-            self.runtime_spec.n_gpu_layers,
-            "--flash-attn",
-            self.runtime_spec.flash_attention,
-            "--cache-type-k",
-            "q8_0",
-            "--cache-type-v",
-            "q8_0",
-            "--image-min-tokens",
-            "1024",
-            "--image-max-tokens",
-            "1024",
-            "--jinja",
-            "--no-webui",
-        ]
-        if self.runtime_spec.fit:
-            arguments.extend(
-                [
-                    "--fit",
-                    "on",
-                    "--fit-target",
-                    str(self.runtime_spec.fit_target_mib),
-                ]
-            )
+        arguments = self.build_arguments()
         env = build_runtime_environment(self.runtime_spec)
         process_options = {}
         if self.runtime_spec.platform_name == "windows":
@@ -243,6 +205,47 @@ class LlamaServer:
         raise TimeoutError(
             f"llama.cpp did not become ready in {timeout:.0f} seconds.\n{self._log_tail()}"
         )
+    @property
+    def effective_fit_target_mib(self) -> int:
+        if self.fit_target_mib_override is not None:
+            return int(self.fit_target_mib_override)
+        return int(self.runtime_spec.fit_target_mib)
+    def build_arguments(self) -> list[str]:
+        """llama-server command line. n_gpu_layers stays whatever the runtime config says ("auto"),
+        never a per-model number; --fit lets llama.cpp choose the offload that fits."""
+        arguments = [
+            str(self.executable),
+            "--model",
+            str(self.model),
+            "--alias",
+            "qwen3.8-27b",
+            "--api-key",
+            "comfyui-local",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(self.port),
+            "--ctx-size",
+            str(self.context_size),
+            "--parallel",
+            "1",
+            "--n-gpu-layers",
+            self.runtime_spec.n_gpu_layers,
+            "--flash-attn",
+            self.runtime_spec.flash_attention,
+            "--cache-type-k",
+            "q8_0",
+            "--cache-type-v",
+            "q8_0",
+            "--jinja",
+            "--no-webui",
+        ]
+        if self.mmproj is not None:
+            arguments[3:3] = ["--mmproj", str(self.mmproj)]
+            arguments.extend(["--image-min-tokens", "1024", "--image-max-tokens", "1024"])
+        if self.runtime_spec.fit:
+            arguments.extend(["--fit", "on", "--fit-target", str(self.effective_fit_target_mib)])
+        return arguments
     def stop(self) -> None:
         if self.process is not None and self.process.poll() is None:
             self.process.terminate()
@@ -329,6 +332,13 @@ class LlamaServer:
             raise RuntimeError(f"llama.cpp HTTP {error.code}: {detail}") from error
         return "".join(parts), usage
 
+    def count_prompt_tokens(self, messages: list[dict[str, object]]) -> int:
+        """Exact prompt size as llama.cpp sees it: /apply-template (model chat template) then /tokenize."""
+        applied = self._request("POST", "/apply-template", {"messages": messages}, timeout=30.0)
+        tokens = self._request(
+            "POST", "/tokenize", {"content": applied["prompt"], "add_special": False, "parse_special": True}, timeout=30.0
+        )
+        return len(tokens["tokens"])
     def chat(
         self,
         messages: list[dict[str, object]],
@@ -384,15 +394,20 @@ class LlamaServerManager:
     def __init__(self):
         self._lock = threading.RLock()
         self._server: LlamaServer | None = None
-        self._key: tuple[Path, Path, int, Path, str, str] | None = None
+        self._key: tuple | None = None
     def acquire(
-        self, model: Path, mmproj: Path, context_size: int = 32768
+        self,
+        model: Path,
+        mmproj: Path | None,
+        context_size: int = DEFAULT_CONTEXT_SIZE,
+        fit_target_mib: int | None = None,
     ) -> tuple[LlamaServer, bool]:
         runtime_spec = load_runtime_spec()
         key = (
             model.resolve(),
-            mmproj.resolve(),
+            mmproj.resolve() if mmproj is not None else None,
             context_size,
+            fit_target_mib,
             runtime_spec.executable.resolve(),
             runtime_spec.platform_name,
             runtime_spec.backend,
@@ -401,7 +416,7 @@ class LlamaServerManager:
             if self._server is not None and self._key == key and self._server.is_running:
                 return self._server, False
             self.release()
-            server = LlamaServer(model, mmproj, context_size, runtime_spec)
+            server = LlamaServer(model, mmproj, context_size, runtime_spec, fit_target_mib)
             try:
                 server.start()
             except Exception:
