@@ -344,6 +344,7 @@ class LlamaServer:
         think_mode: bool,
         reasoning_effort: str,
         on_delta: Callable[[str], None] | None = None,
+        response_format: dict | None = None,
     ) -> tuple[str, dict[str, int]]:
         payload = {
             "model": "qwen3.8-27b",
@@ -365,6 +366,8 @@ class LlamaServer:
         }
         if think_mode:
             payload["reasoning_effort"] = reasoning_effort
+        if response_format is not None:
+            payload["response_format"] = response_format
         content, usage = self._stream_request(
             "POST",
             "/v1/chat/completions",

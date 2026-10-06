@@ -1,6 +1,7 @@
 from __future__ import annotations
 import atexit
 import gc
+import json
 import logging
 import re
 import threading
@@ -19,6 +20,15 @@ from .media import (
     text_content,
 )
 from .runtime import LlamaServerManager
+from .text_task import (
+    MODEL_LABEL,
+    RESPONSE_FORMATS,
+    StructuredOutputError,
+    TextTaskInputError,
+    build_envelope,
+    build_messages,
+    build_response_format,
+)
 from .skills import (
     SKILL_NAMES,
     detect_h3_mode,
@@ -726,8 +736,92 @@ class QwenH3Prompt(io.ComfyNode):
                 "error", stage="error", message=f"{type(error).__name__}: {error}"
             )
             raise
+class QwenTextTask(io.ComfyNode):
+    """Domain-neutral text task: instructions + input -> text/JSON envelope.
+
+    Reuses the same llama.cpp server manager and models as QwenH3PromptLocal.
+    Failures are returned as a structured envelope (ok=false) instead of raising,
+    so API callers always receive a machine-readable result.
+    """
+    @classmethod
+    def define_schema(cls):
+        models = _model_options(False)
+        projectors = _model_options(True)
+        return io.Schema(
+            node_id="QwenTextTaskLocal",
+            display_name="Qwen Text Task (Local)",
+            category="😺dzNodes/Qwen_H3_Prompt",
+            description="Runs one instruction/input text task on the local Qwen model and returns a JSON envelope.",
+            is_output_node=True,
+            inputs=[
+                io.String.Input("instructions", multiline=True, default=""),
+                io.String.Input("user_input", multiline=True, default=""),
+                io.Combo.Input("response_format", options=list(RESPONSE_FORMATS), default="text"),
+                io.String.Input("json_schema", multiline=True, default="", optional=True),
+                io.Combo.Input("llm_model", options=models, default=DEFAULT_MODEL if DEFAULT_MODEL in models else models[0]),
+                io.Combo.Input("vision_model", options=projectors, default=DEFAULT_MMPROJ if DEFAULT_MMPROJ in projectors else projectors[0]),
+                io.Int.Input("max_tokens", default=2048, min=16, max=8192, step=1),
+                io.Float.Input("temperature", default=0.2, min=0.0, max=2.0, step=0.05),
+                io.Int.Input("seed", default=0, min=0, max=0xFFFFFFFFFFFFFFFF, step=1),
+                io.Boolean.Input("force_unload_model", default=True),
+            ],
+            outputs=[io.String.Output("result_json")],
+        )
+
+    @classmethod
+    def execute(cls, instructions, user_input, response_format, llm_model, vision_model,
+                max_tokens, temperature, seed, force_unload_model, json_schema="") -> io.NodeOutput:
+        started = time.perf_counter()
+        try:
+            envelope = cls._run(
+                instructions, user_input, response_format, json_schema, llm_model,
+                vision_model, max_tokens, temperature, seed, force_unload_model, started,
+            )
+        except Exception as error:  # noqa: BLE001
+            if isinstance(error, (TextTaskInputError, FileNotFoundError)):
+                code = "INVALID_REQUEST"
+            elif isinstance(error, StructuredOutputError):
+                code = "INVALID_STRUCTURED_OUTPUT"
+            else:
+                code = "MODEL_EXECUTION_FAILED"
+            _failure(f"[Qwen Text Task] {code}: {error}")
+            try:
+                with INFERENCE_LOCK:
+                    _release_node_resources()
+            except Exception:  # noqa: BLE001
+                pass
+            envelope = {"schema": "edx.text-task.result/v1", "ok": False,
+                        "error": {"code": code, "message": str(error)}}
+        payload = json.dumps(envelope, ensure_ascii=False)
+        return io.NodeOutput(payload, ui={"edx_text_task": [payload]})
+
+    @classmethod
+    def _run(cls, instructions, user_input, response_format, json_schema, llm_model,
+             vision_model, max_tokens, temperature, seed, force_unload_model, started):
+        messages = build_messages(instructions, user_input)
+        fmt = build_response_format(response_format, json_schema)
+        model = _ensure_model_available(llm_model)
+        projector = _ensure_model_available(vision_model)
+        with INFERENCE_LOCK:
+            comfy.model_management.unload_all_models()
+            comfy.model_management.soft_empty_cache()
+            server, _ = SERVER_MANAGER.acquire(model, projector)
+            settings = _sampling_settings(False)
+            settings["temperature"] = temperature
+            text, usage = server.chat(
+                messages, seed=seed, max_tokens=max_tokens, think_mode=False,
+                reasoning_effort="low", response_format=fmt, **settings,
+            )
+            envelope = build_envelope(
+                text, response_format=response_format, usage=usage, model=MODEL_LABEL,
+                backend=server.backend, seed=seed, max_tokens=max_tokens,
+                elapsed_s=time.perf_counter() - started,
+            )
+            if force_unload_model:
+                _release_node_resources()
+        return envelope
 class QwenH3PromptExtension(ComfyExtension):
     async def get_node_list(self):
-        return [QwenH3Prompt]
+        return [QwenH3Prompt, QwenTextTask]
 async def comfy_entrypoint() -> QwenH3PromptExtension:
     return QwenH3PromptExtension()

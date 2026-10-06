@@ -8,6 +8,7 @@
     "voice-cloning": {"providers":["qwen3-tts","chatterbox-voice-clone"]},
     "speech-to-text": {"providers":["qwen-asr"]},
     "upscale": {"aliases":["seedvr2"],"providers":["seedvr2"]},
+    "text-generation": {"aliases":["text-task","qwen-text"],"name":"Tarefa textual local","description":"Executa uma tarefa textual estruturada (instruções + entrada) via Qwen no ComfyUI.","providers":["qwen-text"]},
     "prompt-generation": {"aliases":["qwen-h3","qwen_h3"],"providers":["qwen-h3"]}
   },
   "install_groups": {
