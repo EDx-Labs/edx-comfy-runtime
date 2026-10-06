@@ -680,9 +680,16 @@ class Provisioner:
                           progress: Progress | None, *, strict: bool) -> bool:
         """Verifica o .partial por SHA-256/tamanho e o promove com os.replace. strict=False: inválido -> descarta e devolve False."""
         self._emit(progress, "VERIFYING_ASSET", asset=ident, bytes_downloaded=current, bytes_total=expected, progress=(min(1.0, current / expected) if expected else None))
+        received = partial.stat().st_size if partial.is_file() else 0
         if not self._valid_model(partial, model, force=True, record=False):
             partial.unlink(missing_ok=True)
-            if strict: raise ProvisioningError(f"download inválido para {ident}")
+            if strict:
+                size = int(model.get("size_bytes", 0) or 0)
+                if size and received != size:
+                    raise ProvisioningError(f"download inválido para {ident} [MODEL_DOWNLOAD_SIZE_MISMATCH]: recebidos {received} bytes, o registry espera {size}")
+                if model.get("sha256"):
+                    raise ProvisioningError(f"download inválido para {ident} [MODEL_DOWNLOAD_SHA256_MISMATCH]: {received} bytes recebidos, SHA-256 diferente do esperado ({model['sha256'][:12]}…)")
+                raise ProvisioningError(f"download inválido para {ident} [MODEL_DOWNLOAD_INVALID]: arquivo vazio ou ilegível ({received} bytes)")
             return False
         os.replace(partial, target)
         self._remember_model(target, model)  # reaproveita o SHA já verificado do .partial
@@ -740,6 +747,10 @@ class Provisioner:
                         response.close()
                         self._emit(progress, "DOWNLOADING_MODEL", asset=ident, bytes_downloaded=0, bytes_total=expected, progress=0.0, message=restart_message, **info)
                         response = self.opener(urllib.request.Request(model["url"], headers=plain), timeout=120)
+                    content_type = str((getattr(response, "headers", None) or {}).get("Content-Type") or "").split(";")[0].strip().lower()
+                    if content_type in ("text/html", "application/json", "application/xhtml+xml"):
+                        response.close()  # página de erro/autenticação com HTTP 200: não é o modelo e não deve virar .partial
+                        raise ProvisioningError(f"download inválido para {ident} [MODEL_DOWNLOAD_INVALID_RESPONSE]: o servidor devolveu {content_type} em vez do arquivo do modelo")
                     with response, partial.open("ab" if current else "wb") as stream:
                         while block := response.read(CHUNK):
                             if cancel_event is not None and cancel_event.is_set():
