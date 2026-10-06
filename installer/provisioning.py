@@ -676,29 +676,70 @@ class Provisioner:
         if cancel_event is None: self.sleeper(delay)
         elif cancel_event.wait(delay): raise ProvisioningCancelled("download cancelado durante a espera de retry; partial preservado")
 
+    def _finalize_partial(self, ident: str, partial: Path, target: Path, model: dict[str, Any], current: int, expected: int | None,
+                          progress: Progress | None, *, strict: bool) -> bool:
+        """Verifica o .partial por SHA-256/tamanho e o promove com os.replace. strict=False: inválido -> descarta e devolve False."""
+        self._emit(progress, "VERIFYING_ASSET", asset=ident, bytes_downloaded=current, bytes_total=expected, progress=(min(1.0, current / expected) if expected else None))
+        if not self._valid_model(partial, model, force=True, record=False):
+            partial.unlink(missing_ok=True)
+            if strict: raise ProvisioningError(f"download inválido para {ident}")
+            return False
+        os.replace(partial, target)
+        self._remember_model(target, model)  # reaproveita o SHA já verificado do .partial
+        self._mark_owned(ident, target)  # materializado pelo Runtime: ownership provado, gravado já (sobrevive a crash)
+        self._emit(progress, "ASSET_READY", asset=ident, bytes_downloaded=current, bytes_total=expected, progress=(1.0 if expected else None))
+        return True
+
+    @staticmethod
+    def _remote_size_from_416(exc: urllib.error.HTTPError) -> int | None:
+        """HTTP 416 costuma trazer 'Content-Range: bytes */<tamanho remoto>'."""
+        match = re.match(r"bytes \*/(\d+)", str((getattr(exc, "headers", None) or {}).get("Content-Range") or ""))
+        return int(match.group(1)) if match else None
+
     def _download(self, ident: str, target: Path, model: dict[str, Any], *, progress: Progress | None = None, cancel_event=None, retries: int = 3) -> bool:
         attempts = max(1, retries)
+        plain = {"User-Agent": "EDx-Provisioner/2.0"}
         with self._thread_asset_lock(target, cancel_event), self._asset_lock(target, cancel_event):
             self._check_cancelled(cancel_event, f"download cancelado antes de {ident}")
             if self._valid_model(target, model): return False
             target.parent.mkdir(parents=True, exist_ok=True)
             partial = target.with_suffix(target.suffix + ".partial")
             expected = int(model.get("size_bytes", 0)) or None
+            reset_used = False  # no máximo UM reinício de resume inválido (416/parcial incompatível) por download
+            restart_message = "Reiniciando download após detectar arquivo parcial incompatível"
             for attempt in range(attempts):
                 self._check_cancelled(cancel_event, f"download cancelado antes de {ident}")
                 current = partial.stat().st_size if partial.exists() else 0
-                if expected and current > expected: partial.unlink(missing_ok=True); current = 0
-                headers = {"User-Agent": "EDx-Provisioner/2.0"}
-                if current: headers["Range"] = f"bytes={current}-"
                 info = {"attempt": attempt + 1, "max_attempts": attempts}
+                if expected and current > expected:
+                    partial.unlink(missing_ok=True); current = 0; reset_used = True
+                    self._emit(progress, "DOWNLOADING_MODEL", asset=ident, bytes_downloaded=0, bytes_total=expected, progress=0.0, message=restart_message, **info)
+                elif expected and current == expected:
+                    # parcial com o tamanho do arquivo completo: um Range a partir daqui seria 416. Só o SHA-256 prova que está completo.
+                    if model.get("sha256") and self._finalize_partial(ident, partial, target, model, current, expected, progress, strict=False): return True
+                    partial.unlink(missing_ok=True); current = 0; reset_used = True
+                    self._emit(progress, "DOWNLOADING_MODEL", asset=ident, bytes_downloaded=0, bytes_total=expected, progress=0.0, message=restart_message, **info)
+                headers = dict(plain)
+                if current: headers["Range"] = f"bytes={current}-"
                 self._emit(progress, "DOWNLOADING_MODEL", asset=ident, bytes_downloaded=current, bytes_total=expected, progress=(current / expected if expected else None), **info)
                 try:
-                    response = self.opener(urllib.request.Request(model["url"], headers=headers), timeout=120)
-                    if current and not self._resumes_at(response, current):
-                        # servidor ignorou/alterou o Range: reinicia o asset do zero (sem fingir resume)
+                    try:
+                        response = self.opener(urllib.request.Request(model["url"], headers=headers), timeout=120)
+                    except urllib.error.HTTPError as exc:
+                        if exc.code != 416 or not current or reset_used: raise
+                        # 416 num resume: o offset local não serve para o objeto remoto. Recupera uma única vez, sem repetir o mesmo Range.
+                        reset_used = True; remote = self._remote_size_from_416(exc); exc.close()
+                        if remote is not None and remote == current and model.get("sha256") and self._finalize_partial(ident, partial, target, model, current, expected, progress, strict=False): return True
                         partial.unlink(missing_ok=True); current = 0
+                        self._check_cancelled(cancel_event, f"download cancelado antes de {ident}")
+                        self._emit(progress, "DOWNLOADING_MODEL", asset=ident, bytes_downloaded=0, bytes_total=expected, progress=0.0, message=restart_message, **info)
+                        response = self.opener(urllib.request.Request(model["url"], headers=plain), timeout=120)
+                    if current and not self._resumes_at(response, current, expected):
+                        # servidor ignorou/alterou o Range (200, offset ou tamanho remoto diferentes): reinicia do zero, sem concatenar
+                        partial.unlink(missing_ok=True); current = 0; reset_used = True
                         response.close()
-                        response = self.opener(urllib.request.Request(model["url"], headers={"User-Agent": "EDx-Provisioner/2.0"}), timeout=120)
+                        self._emit(progress, "DOWNLOADING_MODEL", asset=ident, bytes_downloaded=0, bytes_total=expected, progress=0.0, message=restart_message, **info)
+                        response = self.opener(urllib.request.Request(model["url"], headers=plain), timeout=120)
                     with response, partial.open("ab" if current else "wb") as stream:
                         while block := response.read(CHUNK):
                             if cancel_event is not None and cancel_event.is_set():
@@ -707,22 +748,7 @@ class Provisioner:
                             self._emit(progress, "DOWNLOADING_MODEL", asset=ident, bytes_downloaded=current, bytes_total=expected, progress=(min(1.0, current / expected) if expected else None), **info)
                     if expected and current < expected:
                         raise _TruncatedDownload(f"conexão encerrada em {current}/{expected} bytes")  # mantém o partial para resume
-                    self._emit(
-                        progress, "VERIFYING_ASSET", asset=ident,
-                        bytes_downloaded=current, bytes_total=expected,
-                        progress=(min(1.0, current / expected) if expected else None),
-                    )
-                    if not self._valid_model(partial, model, force=True, record=False):
-                        partial.unlink(missing_ok=True)
-                        raise ProvisioningError(f"download inválido para {ident}")
-                    os.replace(partial, target)
-                    self._remember_model(target, model)  # reaproveita o SHA já verificado do .partial
-                    self._mark_owned(ident, target)  # materializado pelo Runtime: ownership provado, gravado já (sobrevive a crash)
-                    self._emit(
-                        progress, "ASSET_READY", asset=ident,
-                        bytes_downloaded=current, bytes_total=expected,
-                        progress=(1.0 if expected else None),
-                    )
+                    self._finalize_partial(ident, partial, target, model, current, expected, progress, strict=True)
                     return True
                 except (ProvisioningError, ProvisioningCancelled):
                     raise
@@ -735,12 +761,13 @@ class Provisioner:
                     self._emit(progress, "DOWNLOADING_MODEL", asset=ident, bytes_downloaded=current, bytes_total=expected, progress=(current / expected if expected else None), retry_in=delay, message=f"Falha transitória; nova tentativa em {delay:g}s", **info)
                     self._backoff(delay, cancel_event)
     @staticmethod
-    def _resumes_at(response: Any, offset: int) -> bool:
+    def _resumes_at(response: Any, offset: int, expected: int | None = None) -> bool:
         if getattr(response, "status", None) != 206: return False
         content_range = getattr(response, "headers", None) and response.headers.get("Content-Range")
         if not content_range: return True  # 206 sem header (servidores simples/mocks): confia no status
-        match = re.match(r"bytes (\d+)-", content_range)
-        return bool(match) and int(match.group(1)) == offset
+        match = re.match(r"bytes (\d+)-\d*/(\d+|\*)", content_range)
+        if not match or int(match.group(1)) != offset: return False
+        return not (expected and match.group(2) != "*" and int(match.group(2)) != expected)  # objeto remoto de outro tamanho: incompatível
     def _workflows(self, ident: str, comfy: Path, state: dict[str, Any]) -> None:
         destination = comfy / "user" / "default" / "workflows" / "EDx" / ident; destination.mkdir(parents=True, exist_ok=True); records = state.setdefault("workflows", {})
         for rel in self.workflow_sets[ident].get("workflows", []):
