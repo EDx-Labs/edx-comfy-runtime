@@ -819,7 +819,9 @@ def install_package(
     cache_dir: Path,
     force: bool,
     offline: bool,
+    downloader=None,
 ) -> tuple[Path, list[Path], str, str]:
+    downloader = downloader or download_asset
     target = (
         context.runtime_root
         / f"{context.platform_name}-{context.architecture}"
@@ -840,7 +842,7 @@ def install_package(
         except RuntimeError as error:
             print(f"[WARN] Existing runtime is invalid and will be replaced: {error}")
 
-    archives = [download_asset(asset, cache_dir, offline) for asset in package.assets]
+    archives = [downloader(asset, cache_dir, offline) for asset in package.assets]
     staging_parent = context.runtime_root / ".staging"
     staging_parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f"{package.backend}-", dir=staging_parent))
@@ -1632,6 +1634,124 @@ def install_cuda_from_source(
 
 
 # Cross-platform command-line entry point.
+def provision_runtime(
+    context: InstallerContext,
+    hardware: HardwareInfo,
+    candidates: list[str],
+    *,
+    cache_dir: Path,
+    source_dir: Path,
+    jobs: int = 1,
+    force: bool = False,
+    offline: bool = False,
+    downloader=None,
+    reraise: tuple[type[BaseException], ...] = (),
+) -> RuntimePackage:
+    """Install the first working backend candidate and write runtime_config.json.
+
+    Reusable entry point shared by the CLI and the EDx provisioner. ``downloader``
+    replaces the built-in downloader; ``reraise`` lists exceptions (e.g.
+    cancellation) that must abort instead of triggering the next fallback.
+    Raises RuntimeError listing every failed backend.
+    """
+    platform_name = context.platform_name
+    packages = PLATFORM_PACKAGES[platform_name][hardware.architecture]
+    errors: list[str] = []
+    for index, backend in enumerate(candidates):
+        package = (
+            LINUX_CUDA_PACKAGES[hardware.architecture]
+            if platform_name == "linux" and backend == "cuda"
+            else packages[backend]
+        )
+        if index:
+            print(f"[WARN] Trying fallback backend: {backend}")
+        try:
+            if platform_name == "linux" and backend == "cuda":
+                if "nvidia" not in hardware.vendors:
+                    raise RuntimeError(
+                        "No NVIDIA GPU was detected. CUDA source builds require an "
+                        "NVIDIA driver and a visible NVIDIA GPU."
+                    )
+                tools = detect_cuda_build_tools(hardware.architecture)
+                executable, library_dirs, version, devices = install_cuda_from_source(
+                    context, package, source_dir, tools, jobs, force, offline,
+                )
+            else:
+                executable, library_dirs, version, devices = install_package(
+                    context, package, cache_dir, force, offline, downloader,
+                )
+            write_runtime_config(
+                context,
+                package,
+                hardware,
+                executable,
+                library_dirs,
+                version,
+                devices,
+                source=(
+                    SOURCE_CONFIG_VALUE
+                    if platform_name == "linux" and backend == "cuda"
+                    else "official ggml-org/llama.cpp GitHub Release"
+                ),
+            )
+            return package
+        except reraise:
+            raise
+        except Exception as error:
+            message = f"{backend}: {error}"
+            errors.append(message)
+            print_error(f"[ERROR] {message}")
+    label = _platform_label(platform_name)
+    details = "\n".join(f"  - {message}" for message in errors)
+    raise RuntimeError(f"No {label} runtime backend could be installed:\n{details}")
+
+
+def runtime_status(root: Path, platform_name: str | None = None) -> dict[str, object]:
+    """Structural readiness of the provisioned runtime (no process is started).
+
+    ``ready`` means runtime_config.json is valid for this platform and the pinned
+    release, the executable exists inside ``root`` and (Windows) its directory
+    holds the runtime DLLs. The installer itself already ran --version and
+    --list-devices before writing the config.
+    """
+    platform_name = platform_name or normalize_platform()
+    root = Path(root)
+
+    def state(ready: bool, reason: str | None = None, **extra: object) -> dict[str, object]:
+        return {"ready": ready, "reason": reason, "tag": RELEASE_TAG, **extra}
+
+    config_path = root / "runtime_config.json"
+    if not config_path.is_file():
+        return state(False, "RUNTIME_CONFIG_MISSING")
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        if not isinstance(config, dict) or config.get("schema_version") != 1:
+            raise ValueError("schema")
+        base = root.resolve()
+        executable = (root / Path(config["executable"])).resolve()
+        executable.relative_to(base)
+        library_dirs = [(root / Path(value)).resolve() for value in config.get("library_dirs", [])]
+        for directory in library_dirs:
+            directory.relative_to(base)
+    except (OSError, ValueError, KeyError, TypeError):
+        return state(False, "RUNTIME_CONFIG_INVALID")
+    backend = str(config.get("backend", "unknown"))
+    if config.get("platform") != platform_name:
+        return state(False, "RUNTIME_PLATFORM_MISMATCH", backend=backend)
+    if config.get("llama_cpp_tag") != RELEASE_TAG:
+        return state(False, "RUNTIME_VERSION_MISMATCH", backend=backend, installed_tag=config.get("llama_cpp_tag"))
+    expected_name = "llama-server.exe" if platform_name == "windows" else "llama-server"
+    if executable.name.casefold() != expected_name or not executable.is_file() or executable.stat().st_size == 0:
+        return state(False, "RUNTIME_EXECUTABLE_MISSING", backend=backend)
+    if any(not directory.is_dir() for directory in library_dirs):
+        return state(False, "RUNTIME_LIBRARY_MISSING", backend=backend)
+    if platform_name == "windows" and not any(
+        item.suffix.casefold() == ".dll" for item in executable.parent.iterdir()
+    ):
+        return state(False, "RUNTIME_LIBRARY_MISSING", backend=backend)
+    return state(True, None, backend=backend, executable=str(executable))
+
+
 def _parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -1821,72 +1941,27 @@ def main(argv: list[str] | None = None) -> int:
             "llama-server.exe" if platform_name == "windows" else "llama-server"
         ),
     )
-    packages = PLATFORM_PACKAGES[platform_name][hardware.architecture]
-    errors: list[str] = []
-    for index, backend in enumerate(candidates):
-        package = (
-            LINUX_CUDA_PACKAGES[hardware.architecture]
-            if platform_name == "linux" and backend == "cuda"
-            else packages[backend]
+    try:
+        package = provision_runtime(
+            context,
+            hardware,
+            candidates,
+            cache_dir=arguments.cache_dir.resolve(),
+            source_dir=arguments.source_dir.resolve(),
+            jobs=arguments.jobs,
+            force=arguments.force,
+            offline=arguments.offline,
         )
-        if index:
-            print(f"[WARN] Trying fallback backend: {backend}")
-        try:
-            if platform_name == "linux" and backend == "cuda":
-                if "nvidia" not in hardware.vendors:
-                    raise RuntimeError(
-                        "No NVIDIA GPU was detected. CUDA source builds require an "
-                        "NVIDIA driver and a visible NVIDIA GPU."
-                    )
-                tools = detect_cuda_build_tools(hardware.architecture)
-                executable, library_dirs, version, devices = install_cuda_from_source(
-                    context,
-                    package,
-                    arguments.source_dir.resolve(),
-                    tools,
-                    arguments.jobs,
-                    arguments.force,
-                    arguments.offline,
-                )
-            else:
-                executable, library_dirs, version, devices = install_package(
-                    context,
-                    package,
-                    arguments.cache_dir.resolve(),
-                    arguments.force,
-                    arguments.offline,
-                )
-            write_runtime_config(
-                context,
-                package,
-                hardware,
-                executable,
-                library_dirs,
-                version,
-                devices,
-                source=(
-                    SOURCE_CONFIG_VALUE
-                    if platform_name == "linux" and backend == "cuda"
-                    else "official ggml-org/llama.cpp GitHub Release"
-                ),
-            )
-            label = _platform_label(platform_name)
-            print_success(
-                f"[OK] {label} llama.cpp runtime setup complete: "
-                f"{package.description}"
-            )
-            if package.backend == "cpu":
-                print("[WARN] CPU mode is functional but Qwen3.8-27B will be slow.")
-            return 0
-        except Exception as error:
-            message = f"{backend}: {error}"
-            errors.append(message)
-            print_error(f"[ERROR] {message}")
-
-    label = _platform_label(platform_name)
-    details = "\n".join(f"  - {message}" for message in errors)
-    print_error(f"[ERROR] No {label} runtime backend could be installed:\n{details}")
-    return 1
+    except RuntimeError as error:
+        print_error(f"[ERROR] {error}")
+        return 1
+    print_success(
+        f"[OK] {_platform_label(platform_name)} llama.cpp runtime setup complete: "
+        f"{package.description}"
+    )
+    if package.backend == "cpu":
+        print("[WARN] CPU mode is functional but Qwen3.8-27B will be slow.")
+    return 0
 
 
 if __name__ == "__main__":

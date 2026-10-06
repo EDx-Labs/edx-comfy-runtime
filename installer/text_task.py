@@ -244,4 +244,4 @@ def describe_availability(provisioner: Provisioner, comfy: Path | None) -> dict[
     installation = provider.get("installation") or {}
     status = "installed" if installation.get("installed") else "not_installed"
     return {"capability": CAPABILITY_ID, "status": status, "provider": provider["id"],
-            "missing": installation.get("missing", []), "requirements": provider["requirements"]}
+            "missing": installation.get("missing", []), "runtime_dependencies": installation.get("runtime_dependencies", []), "requirements": provider["requirements"]}

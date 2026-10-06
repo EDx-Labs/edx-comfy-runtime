@@ -16,6 +16,7 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="mostra o plano sem alterar arquivos")
     parser.add_argument("--skip-models", action="store_true", help="não baixa pesos")
     parser.add_argument("--skip-deps", action="store_true", help="não instala dependências Python")
+    parser.add_argument("--skip-runtime", action="store_true", help="não provisiona o runtime llama.cpp do Qwen")
     parser.add_argument("--no-pip", action="store_true", help="compatível com versões anteriores; igual a --skip-deps")
     args = parser.parse_args()
     provisioner = Provisioner()
@@ -32,7 +33,7 @@ def main() -> None:
         plan = provisioner.plan(args.profile, comfy.expanduser().resolve())
         print(plan.format())
         if not args.dry_run:
-            provisioner.install(plan, skip_models=args.skip_models, skip_deps=args.skip_deps or args.no_pip)
+            provisioner.install(plan, skip_models=args.skip_models, skip_deps=args.skip_deps or args.no_pip, skip_runtime=args.skip_runtime)
     except ProvisioningError as exc:
         parser.exit(2, f"[EDx] erro: {exc}\n")
 

@@ -1,6 +1,7 @@
 """API reutilizável do provisionador modular EDx."""
 from __future__ import annotations
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -24,6 +25,24 @@ _DOWNLOAD_LOCKS: dict[str, threading.Lock] = {}
 _DOWNLOAD_LOCKS_GUARD = threading.Lock()
 
 Progress = Callable[[dict[str, Any]], None]
+_RUNTIME_INSTALLERS: dict[str, Any] = {}
+
+
+def load_runtime_installer(path: Path):
+    """Load a component's stdlib-only runtime installer by path (single source of URLs/versions)."""
+    key = str(Path(path).resolve())
+    module = _RUNTIME_INSTALLERS.get(key)
+    if module is None:
+        name = "edx_runtime_installer_" + hashlib.sha256(key.encode()).hexdigest()[:12]
+        spec = importlib.util.spec_from_file_location(name, key)
+        if spec is None or spec.loader is None: raise ProvisioningError(f"instalador de runtime ilegível: {path}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module  # dataclasses exigem o módulo registrado durante a execução
+        try: spec.loader.exec_module(module)
+        except BaseException:
+            sys.modules.pop(name, None); raise
+        _RUNTIME_INSTALLERS[key] = module
+    return module
 
 class ProvisioningError(RuntimeError): pass
 _URL_CREDENTIALS = re.compile(r"(://)[^/@\s]+@")
@@ -278,6 +297,8 @@ class Provisioner:
             item = self.components.get(ident)
             if not item or not item.get("source") or not (ROOT / item["source"]).is_dir():
                 reasons.append(f"COMPONENT_UNAVAILABLE:{ident}")
+            elif item.get("backend_runtime") and not (ROOT / item["source"] / item["backend_runtime"]["installer"]).is_file():
+                reasons.append(f"RUNTIME_INSTALLER_UNAVAILABLE:{ident}")
         for ident in models:
             item = self.models.get(ident)
             if not item:
@@ -308,10 +329,12 @@ class Provisioner:
         missing = ([] if has_profile_state else ["profile_state"])
         missing.extend(plan.to_install)
         missing.extend(f"model:{item}" for item in plan.models_to_download)
+        runtime_dependencies = [self.backend_runtime_status(ident, comfy) for ident in plan.components if self.components[ident].get("backend_runtime")]
         return {
             "installed": has_profile_state and not plan.to_install and not plan.models_to_download,
             "profile_id": profile_id,
             "missing": missing,
+            "runtime_dependencies": runtime_dependencies,
             "warnings": plan.warnings,
             "reused_assets": plan.reused_assets,
             "pending_assets": plan.pending_assets,
@@ -492,6 +515,11 @@ class Provisioner:
             elif target.exists() and not marker.exists(): result.warnings.append(f"component:{ident} já existe e não é gerenciado pelo EDx; será preservado")
             else:
                 result.to_install.append("component:" + ident); result.pending_assets.append("component:" + ident)
+            if component.get("backend_runtime"):
+                status = self.backend_runtime_status(ident, comfy)
+                if status["ready"]: result.already_installed.append("runtime:" + ident); result.reused_assets.append("runtime:" + ident)
+                else:
+                    result.to_install.append("runtime:" + ident); result.pending_assets.append("runtime:" + ident); result.download_size_complete = False
         for ident in models:
             model = self.models[ident]; target = self._model_path(comfy, model)
             if self._valid_model(target, model):
@@ -584,7 +612,8 @@ class Provisioner:
             self._emit(progress, "INSTALLING_COMPONENT", component=ident)
             if command: self._run_cancellable(command, cancel_event, item.get("name", ident))
         self._check_cancelled(cancel_event)
-        state["components"][ident] = {"version": item.get("version", "0"), "fingerprint": version, "updated_at": time.time()}
+        state["components"][ident] = {"version": item.get("version", "0"), "fingerprint": version, "updated_at": time.time(),
+                                      **({"backend_runtime": old["backend_runtime"]} if old.get("backend_runtime") else {})}
     @staticmethod
     def _reclaim_orphan_lock(lock_path: Path, dead_pid: int) -> None:
         """Remove um lock órfão sem corrida. Nunca toca no .partial (ciclos de vida distintos).
@@ -779,6 +808,55 @@ class Provisioner:
         match = re.match(r"bytes (\d+)-\d*/(\d+|\*)", content_range)
         if not match or int(match.group(1)) != offset: return False
         return not (expected and match.group(2) != "*" and int(match.group(2)) != expected)  # objeto remoto de outro tamanho: incompatível
+    def _runtime_target(self, ident: str, comfy: Path) -> Path: return comfy / "custom_nodes" / self.components[ident]["name"]
+    def _runtime_module(self, ident: str):
+        item = self.components[ident]; return load_runtime_installer(ROOT / item["source"] / item["backend_runtime"]["installer"])
+    def backend_runtime_status(self, ident: str, comfy: Path) -> dict[str, Any]:
+        """Readiness estrutural do executável gerenciado por um component (ex.: llama.cpp). Não executa processos."""
+        try: status = dict(self._runtime_module(ident).runtime_status(self._runtime_target(ident, comfy)))
+        except Exception as exc: status = {"ready": False, "reason": "RUNTIME_INSTALLER_UNAVAILABLE", "detail": str(exc)}
+        status["id"] = self.components[ident]["backend_runtime"].get("id", ident); status["component"] = ident
+        return status
+    def _runtime_downloader(self, ident: str, progress: Progress | None, cancel_event):
+        """Adapta _download (resume, retry, lock, SHA-256, partial seguro) ao contrato Asset -> arquivo do install_runtime."""
+        def fetch(asset, cache_dir: Path, offline: bool) -> Path:
+            target = Path(cache_dir) / asset.name
+            if offline and not target.is_file(): raise ProvisioningError(f"cache offline sem {asset.name}")
+            def relay(event: dict[str, Any]) -> None:
+                if progress: progress({**event, "kind": "runtime", "component": ident})
+            self._download(f"runtime:{ident}:{asset.name}", target, {"url": asset.url, "sha256": asset.sha256}, progress=relay, cancel_event=cancel_event)
+            return target
+        return fetch
+    def _backend_runtime(self, ident: str, comfy: Path, state: dict[str, Any], progress: Progress | None = None, cancel_event=None) -> None:
+        item = self.components[ident]
+        if not item.get("backend_runtime"): return
+        self._check_cancelled(cancel_event)
+        target = self._runtime_target(ident, comfy)
+        try: dev_link = target.exists() and os.path.samefile(ROOT / item["source"], target)
+        except OSError: dev_link = False
+        if not target.exists(): raise ProvisioningError(f"custom node ausente; runtime não pode ser instalado [RUNTIME_NODE_MISSING]: {target.name}")
+        if not (target / ".edx-component.json").is_file() and not dev_link:
+            print(f"[EDx] node externo {target.name}: runtime não é instalado pelo Runtime (execute install_runtime.py)"); return
+        if self.backend_runtime_status(ident, comfy)["ready"]:
+            self._emit(progress, "RUNTIME_CACHED", component=ident); return
+        module = self._runtime_module(ident)
+        self._emit(progress, "INSTALLING_COMPONENT", component=item["backend_runtime"].get("id", ident))
+        try:
+            platform_name = module.normalize_platform(); hardware = module.detect_hardware(platform_name)
+            candidates = module.select_backend_candidates(platform_name, hardware, requested_backend="auto", allow_fallback=True, build_from_source=False)
+            context = module.InstallerContext(root=target, platform_name=platform_name, architecture=hardware.architecture, release_tag=module.RELEASE_TAG,
+                                              release_commit=module.RELEASE_COMMIT, executable_name="llama-server.exe" if platform_name == "windows" else "llama-server")
+            package = module.provision_runtime(context, hardware, candidates, cache_dir=context.runtime_root / ".downloads" / module.RELEASE_TAG,
+                                               source_dir=context.runtime_root / ".sources" / f"llama.cpp-{module.RELEASE_TAG}", force=True,
+                                               downloader=self._runtime_downloader(ident, progress, cancel_event), reraise=(ProvisioningCancelled,))
+        except ProvisioningCancelled: raise
+        except Exception as exc: raise ProvisioningError(f"runtime llama.cpp não pôde ser instalado [RUNTIME_INSTALL_FAILED]: {exc}") from exc
+        status = self.backend_runtime_status(ident, comfy)
+        if not status["ready"]: raise ProvisioningError(f"runtime llama.cpp instalado mas inválido [RUNTIME_INSTALL_INVALID]: {status.get('reason')}")
+        record = state.setdefault("components", {}).setdefault(ident, {})
+        record["backend_runtime"] = {"id": item["backend_runtime"].get("id", ident), "tag": module.RELEASE_TAG, "backend": package.backend,
+                                     "path": str(context.runtime_root), "owned": True, "installed_at": time.time()}
+        write_json(self._state_path(comfy), state)  # ownership gravado já: sobrevive a crash antes do commit do profile
     def _workflows(self, ident: str, comfy: Path, state: dict[str, Any]) -> None:
         destination = comfy / "user" / "default" / "workflows" / "EDx" / ident; destination.mkdir(parents=True, exist_ok=True); records = state.setdefault("workflows", {})
         for rel in self.workflow_sets[ident].get("workflows", []):
@@ -790,7 +868,7 @@ class Provisioner:
         self, plan: InstallPlan, *, skip_models: bool = False,
         skip_deps: bool = False, progress: Progress | None = None,
         cancel_event=None, before_commit: Callable[[], None] | None = None,
-        force_verify: bool = False,
+        force_verify: bool = False, skip_runtime: bool = False,
     ) -> None:
         state_path = self._state_path(plan.comfy); state = read_json(state_path, {"schema_version": 1, "profiles": {}, "components": {}, "models": {}, "workflows": {}})
         self._check_cancelled(cancel_event)
@@ -831,6 +909,8 @@ class Provisioner:
         )
         for ident in plan.components:
             self._component(ident, plan.comfy, not skip_deps, state, progress, cancel_event)
+        if not skip_runtime:
+            for ident in plan.components: self._backend_runtime(ident, plan.comfy, state, progress, cancel_event)
         if not skip_models:
             pending_positions = {ident: index for index, ident in enumerate(pending_models, 1)}
             completed_bytes = 0

@@ -7,6 +7,7 @@ Princípio: só remove o que consegue PROVAR que (1) é gerenciado pelo EDx, (2)
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 import time
 from dataclasses import asdict, dataclass, field
@@ -21,11 +22,13 @@ KEEP_SHARED = "KEEP_SHARED"        # usado por outra capability instalada (não 
 KEEP_REQUIRED = "KEEP_REQUIRED"    # a capability removida é dependência de outra capability instalada
 KEEP_UNMANAGED = "KEEP_UNMANAGED"  # sem prova de ownership (manual, editado, externo, link desconhecido)
 MARKER = ".edx-component.json"
+RUNTIME_DIR = "runtime"
+RUNTIME_CONFIG = "runtime_config.json"
 
 
 @dataclass
 class UninstallItem:
-    kind: str                    # model | partial | component | component_link | workflow_set | file
+    kind: str                    # model | partial | runtime | component | component_link | workflow_set | file
     ident: str
     path: str
     action: str
@@ -160,7 +163,7 @@ class Uninstaller:
             for path in self._paths(comfy, other_closure): needed.setdefault(path, (other, depends_on_target))
         state = read_json(self.p._state_path(comfy), {})
         for ident in self._resources(closure, "models"): self._plan_model(plan, comfy, ident, needed, state)
-        for ident in self._resources(closure, "components"): self._plan_component(plan, comfy, ident, needed)
+        for ident in self._resources(closure, "components"): self._plan_component(plan, comfy, ident, needed, state)
         for ident in self._resources(closure, "workflow_sets"): self._plan_workflows(plan, comfy, ident, needed, state)
         plan.warnings.append("dependências Python (pip) e o cache global não são desinstalados")
         return plan
@@ -201,7 +204,7 @@ class Uninstaller:
     def _source_files(self, source: Path) -> dict[str, Path]:
         return {item.relative_to(source).as_posix(): item for item in provisioning._local_files(source)}
 
-    def _plan_component(self, plan: UninstallPlan, comfy: Path, ident: str, needed) -> None:
+    def _plan_component(self, plan: UninstallPlan, comfy: Path, ident: str, needed, state: dict[str, Any]) -> None:
         item = self.p.components[ident]; source = provisioning.ROOT / item["source"]; path = self._component_path(comfy, ident)
         if not os.path.lexists(path): return
         keep = self._keep_for(needed, path)
@@ -216,14 +219,38 @@ class Uninstaller:
         marker = read_json(path / MARKER)
         if not (path / MARKER).is_file() or marker.get("component") != ident:
             plan.items.append(UninstallItem("component", ident, str(path), KEEP_UNMANAGED, "sem marcador do EDx para este component (externo/manual)")); return
-        managed, unmanaged, size = self._classify_tree(path, self._source_files(source), marker_owned=True)
+        runtime = item.get("backend_runtime")
+        if runtime: self._plan_runtime(plan, comfy, ident, path, state)
+        managed, unmanaged, size = self._classify_tree(path, self._source_files(source), marker_owned=True, skip_root=frozenset({RUNTIME_DIR, RUNTIME_CONFIG}) if runtime else frozenset())
         if not (marker.get("uninstalled_at") and managed == [MARKER]):  # marcador-resíduo de uma desinstalação anterior: nada a remover
             plan.items.append(UninstallItem("component", ident, str(path), REMOVE, "component gerenciado: só arquivos provados como do EDx", size, managed))
         for rel, why in unmanaged: plan.items.append(UninstallItem("file", ident, str(path / rel), KEEP_UNMANAGED, why))
 
-    def _classify_tree(self, root: Path, source_files: dict[str, Path], marker_owned: bool) -> tuple[list[str], list[tuple[str, str]], int]:
+    def _tree_has_link(self, root: Path) -> bool:
+        for current, dirnames, filenames in os.walk(root, followlinks=False):
+            if any(_is_link(Path(current) / name) for name in (*dirnames, *filenames)): return True
+        return False
+
+    def _tree_size(self, root: Path) -> int:
+        return sum(entry.stat().st_size for entry in root.rglob("*") if entry.is_file() and not entry.is_symlink())
+
+    def _plan_runtime(self, plan: UninstallPlan, comfy: Path, ident: str, node: Path, state: dict[str, Any]) -> None:
+        """Runtime executável gerenciado (llama.cpp): só sai com ownership gravado pelo provisionador e sem links internos."""
+        path = node / RUNTIME_DIR; config = node / RUNTIME_CONFIG
+        if not os.path.lexists(path) and not os.path.lexists(config): return
+        record = state.get("components", {}).get(ident, {}).get("backend_runtime") or {}
+        if _is_link(path) or _is_link(config) or (path.exists() and self._tree_has_link(path)):
+            plan.items.append(UninstallItem("runtime", ident, str(path), KEEP_UNMANAGED, "link dentro do runtime não é seguido")); return
+        if record.get("owned") is not True or record.get("path") != str(path):
+            plan.items.append(UninstallItem("runtime", ident, str(path), KEEP_UNMANAGED, "runtime não instalado pelo Runtime (propriedade não comprovada)")); return
+        plan.items.append(UninstallItem("runtime", ident, str(path), REMOVE, "runtime llama.cpp gerenciado, exclusivo desta capability",
+                                        self._tree_size(path) if path.is_dir() else 0))
+
+    def _classify_tree(self, root: Path, source_files: dict[str, Path], marker_owned: bool, skip_root: frozenset = frozenset()) -> tuple[list[str], list[tuple[str, str]], int]:
         managed: list[str] = []; unmanaged: list[tuple[str, str]] = []; size = 0; pending_pyc: list[str] = []
         for current, dirnames, filenames in os.walk(root, followlinks=False):
+            if Path(current) == root:
+                dirnames[:] = [name for name in dirnames if name not in skip_root]; filenames = [name for name in filenames if name not in skip_root]
             for name in list(dirnames):
                 full = Path(current) / name
                 if _is_link(full):
@@ -302,6 +329,15 @@ class Uninstaller:
         if item.kind in ("model", "partial"):
             if not _inside(comfy / "models", path) or _is_link(path): raise OSError(f"caminho fora da raiz: {path}")
             size = path.stat().st_size; os.unlink(path); return size
+        if item.kind == "runtime":
+            root = comfy / "custom_nodes"
+            if not _inside(root, path) or path.name != RUNTIME_DIR or _is_link(path): raise OSError(f"runtime fora da raiz: {path}")
+            if path.is_dir():
+                if self._tree_has_link(path): raise OSError(f"link dentro do runtime: {path}")
+                freed = self._tree_size(path); shutil.rmtree(path)
+            config = path.parent / RUNTIME_CONFIG
+            if config.is_file() and not _is_link(config) and _inside(root, config): os.unlink(config)
+            return freed
         if item.kind == "component_link":
             if not _inside(comfy / "custom_nodes", path) or not _is_link(path): raise OSError(f"não é link gerenciado: {path}")
             try: os.unlink(path)
@@ -334,6 +370,7 @@ class Uninstaller:
         if not state: return
         for item in removed:
             if item.kind == "model": state.get("models", {}).pop(item.ident, None); self.p._forget_model(Path(item.path))
+            elif item.kind == "runtime": state.get("components", {}).get(item.ident, {}).pop("backend_runtime", None)
             elif item.kind in ("component", "component_link"): state.get("components", {}).pop(item.ident, None)
             elif item.kind == "workflow_set":
                 for key in [k for k, v in state.get("workflows", {}).items() if v.get("workflow_set") == item.ident and Path(k).parent == Path(item.path)]:
