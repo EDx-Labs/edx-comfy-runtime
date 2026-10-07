@@ -84,3 +84,30 @@ class Krea2ManifestTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Krea2VramMetadataTests(unittest.TestCase):
+    """Metadata medida (RTX 3050 6 GB: krea2 ~5,1 GB; reference 5,3 GB @768 e 5,2 GB @1024, sem OOM)."""
+
+    def setUp(self) -> None:
+        self.p = Provisioner()
+
+    def test_krea2_declares_measured_6_8(self) -> None:
+        hardware = self.p.profiles["krea2"]["hardware"]
+        self.assertEqual((hardware["min_vram"], hardware["recommended_vram"]), (6, 8))
+        req = self.p.profile_requirements("krea2")
+        self.assertEqual((req["min_vram_mb"], req["recommended_vram_mb"]), (6 * 1024, 8 * 1024))
+
+    def test_reference_inherits_6_8_without_its_own_requirement(self) -> None:
+        self.assertNotIn("hardware", self.p.profiles["krea2-reference"])
+        self.assertNotIn("hardware", self.p.components["krea2-reference-runtime"])
+        req = self.p.profile_requirements("krea2-reference")
+        self.assertEqual((req["min_vram_mb"], req["recommended_vram_mb"]), (6 * 1024, 8 * 1024))
+        self.assertEqual(self.p.profile_requirements("krea2-full")["min_vram_mb"], 6 * 1024)
+
+    def test_6gb_gpu_meets_the_minimum_but_not_the_recommended(self) -> None:
+        req = self.p.profile_requirements("krea2-reference")
+        rtx_3050 = 6 * 1024
+        self.assertGreaterEqual(rtx_3050, req["min_vram_mb"])   # sem INSUFFICIENT_VRAM
+        self.assertLess(rtx_3050, req["recommended_vram_mb"])   # abaixo do recomendado
+        self.assertLess(4 * 1024, req["min_vram_mb"])           # GPU menor continua abaixo do mínimo
