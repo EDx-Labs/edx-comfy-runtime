@@ -21,8 +21,9 @@ from .media import (
 )
 from .runtime import LlamaServerManager
 from .text_task import (
-    MODEL_LABEL,
     RESPONSE_FORMATS,
+    TEXT_MODEL_FILENAME,
+    TEXT_MODEL_SUBDIR,
     ContextExceededError,
     RuntimeConfigError,
     StructuredOutputError,
@@ -45,6 +46,7 @@ from .skills import (
 )
 WEB_DIRECTORY = "./web"
 MODEL_DIR = Path(folder_paths.models_dir) / "LLM" / "Qwen3.8"
+TEXT_MODEL_DIR = Path(folder_paths.models_dir) / "LLM" / TEXT_MODEL_SUBDIR
 DEFAULT_MODEL = "Qwen3.8-27B-Q4_K_M.gguf"
 DEFAULT_MMPROJ = "mmproj-F16.gguf"
 MODEL_DOWNLOADS = {
@@ -88,8 +90,11 @@ def _model_options(projector: bool) -> list[str]:
         options = [name for name in files if "mmproj" not in name.lower()]
         fallback = DEFAULT_MODEL
     return options or [fallback]
-def _resolve_model(name: str) -> Path:
-    root = MODEL_DIR.resolve()
+def _text_model_options() -> list[str]:
+    files = sorted(path.name for path in TEXT_MODEL_DIR.glob("*.gguf")) if TEXT_MODEL_DIR.is_dir() else []
+    return [name for name in files if "mmproj" not in name.lower()] or [TEXT_MODEL_FILENAME]
+def _resolve_model(name: str, directory: Path | None = None) -> Path:
+    root = (directory or MODEL_DIR).resolve()
     path = (root / name).resolve()
     if path.parent != root or not path.is_file() or path.suffix.lower() != ".gguf":
         raise FileNotFoundError(f"Invalid or missing GGUF model in {root}: {name}")
@@ -749,8 +754,7 @@ class QwenTextTask(io.ComfyNode):
     """
     @classmethod
     def define_schema(cls):
-        models = _model_options(False)
-        projectors = _model_options(True)
+        models = _text_model_options()
         return io.Schema(
             node_id="QwenTextTaskLocal",
             display_name="Qwen Text Task (Local)",
@@ -762,8 +766,7 @@ class QwenTextTask(io.ComfyNode):
                 io.String.Input("user_input", multiline=True, default=""),
                 io.Combo.Input("response_format", options=list(RESPONSE_FORMATS), default="text"),
                 io.String.Input("json_schema", multiline=True, default="", optional=True),
-                io.Combo.Input("llm_model", options=models, default=DEFAULT_MODEL if DEFAULT_MODEL in models else models[0]),
-                io.Combo.Input("vision_model", options=projectors, default=DEFAULT_MMPROJ if DEFAULT_MMPROJ in projectors else projectors[0]),
+                io.Combo.Input("llm_model", options=models, default=TEXT_MODEL_FILENAME if TEXT_MODEL_FILENAME in models else models[0]),
                 io.Int.Input("max_tokens", default=2048, min=16, max=8192, step=1),
                 io.Float.Input("temperature", default=0.2, min=0.0, max=2.0, step=0.05),
                 io.Int.Input("seed", default=0, min=0, max=0xFFFFFFFFFFFFFFFF, step=1),
@@ -773,13 +776,13 @@ class QwenTextTask(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, instructions, user_input, response_format, llm_model, vision_model,
+    def execute(cls, instructions, user_input, response_format, llm_model,
                 max_tokens, temperature, seed, force_unload_model, json_schema="") -> io.NodeOutput:
         started = time.perf_counter()
         try:
             envelope = cls._run(
                 instructions, user_input, response_format, json_schema, llm_model,
-                vision_model, max_tokens, temperature, seed, force_unload_model, started,
+                max_tokens, temperature, seed, force_unload_model, started,
             )
         except Exception as error:  # noqa: BLE001
             details = None
@@ -808,17 +811,16 @@ class QwenTextTask(io.ComfyNode):
 
     @classmethod
     def _run(cls, instructions, user_input, response_format, json_schema, llm_model,
-             vision_model, max_tokens, temperature, seed, force_unload_model, started):
+             max_tokens, temperature, seed, force_unload_model, started):
         messages = build_messages(instructions, user_input)
         fmt = build_response_format(response_format, json_schema)
         options = resolve_inference_options()
-        model = _ensure_model_available(llm_model)
-        projector = _ensure_model_available(vision_model)
+        model = _resolve_model(llm_model, TEXT_MODEL_DIR)  # provisioned by the Runtime (qwen-text profile); text-only, no mmproj
         with INFERENCE_LOCK:
             comfy.model_management.unload_all_models()
             comfy.model_management.soft_empty_cache()
             server, _ = SERVER_MANAGER.acquire(
-                model, projector,
+                model, None,
                 context_size=options["context_size"], fit_target_mib=options["fit_target_mib"],
             )
             prompt_tokens = server.count_prompt_tokens(messages)
@@ -830,7 +832,7 @@ class QwenTextTask(io.ComfyNode):
                 reasoning_effort="low", response_format=fmt, **settings,
             )
             envelope = build_envelope(
-                text, response_format=response_format, usage=usage, model=MODEL_LABEL,
+                text, response_format=response_format, usage=usage, model=model.stem,
                 backend=server.backend, seed=seed, max_tokens=max_tokens,
                 elapsed_s=time.perf_counter() - started, context_size=server.context_size,
                 fit_target_mib=server.effective_fit_target_mib, prompt_tokens=prompt_tokens,

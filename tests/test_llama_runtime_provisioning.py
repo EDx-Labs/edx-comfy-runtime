@@ -19,11 +19,12 @@ from unittest import mock
 from installer import provisioning
 from installer.provisioning import Provisioner, ProvisioningCancelled, ProvisioningError, load_runtime_installer
 from installer.text_task import describe_availability
-from installer.uninstall import KEEP_REQUIRED, KEEP_SHARED, KEEP_UNMANAGED, REMOVE
+from installer.uninstall import KEEP_SHARED, KEEP_UNMANAGED, REMOVE
 
 COMPONENT = "qwen-h3-runtime"
 NODE = "ComfyUI_Qwen_H3_Prompt"
-MODELS = ("qwen-h3-27b-q4", "qwen-h3-mmproj")
+MODELS = ("qwen-h3-27b-q4", "qwen-h3-mmproj")  # qwen-h3 (multimodal 27B)
+TEXT_MODELS = ("qwen3-14b-q4-k-m",)  # qwen-text (text-only 14B)
 
 
 class Response:
@@ -57,7 +58,7 @@ class LlamaRuntimeBase(unittest.TestCase):
         self.fail_urls: dict[str, BaseException] = {}
 
         # modelos pequenos e locais (nada de 27 GB)
-        for ident in MODELS:
+        for ident in (*MODELS, *TEXT_MODELS):
             data = f"payload-{ident}".encode()
             self.payloads[ident] = data
             self.p.models[ident].update({"url": f"https://example.invalid/{ident}", "size_bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()})
@@ -91,6 +92,7 @@ class LlamaRuntimeBase(unittest.TestCase):
     def node(self) -> Path: return self.comfy / "custom_nodes" / NODE
     def zip_requests(self) -> list[str]: return [r for r in self.requests if r.endswith(".zip")]
     def model_requests(self) -> list[str]: return [r for r in self.requests if r in MODELS]
+    def text_model_requests(self) -> list[str]: return [r for r in self.requests if r in TEXT_MODELS]
     def install(self, profile: str, **kwargs) -> None: self.p.install(self.p.plan(profile, self.comfy), skip_deps=True, **kwargs)
     def status(self, profile: str) -> dict: return self.p.profile_installation(profile, self.comfy)
     def runtime_ready(self) -> bool: return self.p.backend_runtime_status(COMPONENT, self.comfy)["ready"]
@@ -99,6 +101,7 @@ class LlamaRuntimeBase(unittest.TestCase):
 class ReadinessTests(LlamaRuntimeBase):
     def test_node_models_workflow_without_llama_are_not_installed_for_both_profiles(self) -> None:
         self.install("qwen-h3", skip_runtime=True)
+        self.install("qwen-text", skip_runtime=True)
         for profile in ("qwen-h3", "qwen-text"):
             info = self.status(profile)
             self.assertFalse(info["installed"], profile)
@@ -192,12 +195,16 @@ class ProvisioningTests(LlamaRuntimeBase):
         self.install("qwen-text")
         self.assertEqual(len(self.zip_requests()), 1, "qwen-text não pode baixar outro llama.cpp")
         self.assertEqual(len(list((self.comfy / "custom_nodes").glob("*Qwen*"))), 1)
+        self.assertEqual(self.text_model_requests(), list(TEXT_MODELS), "qwen-text baixa só o 14B")
+        self.assertEqual(sorted(self.model_requests()), sorted(MODELS), "o 27B/mmproj do qwen-h3 não é baixado de novo")
 
     def test_text_then_h3_share_one_installation(self) -> None:
         self.install("qwen-text")
         self.assertEqual(len(self.zip_requests()), 1)
+        self.assertEqual(self.model_requests(), [], "qwen-text não baixa o 27B nem o mmproj")
         self.install("qwen-h3")
         self.assertEqual(len(self.zip_requests()), 1, "qwen-h3 não pode baixar outro llama.cpp")
+        self.assertEqual(self.text_model_requests(), list(TEXT_MODELS), "o 14B não é baixado de novo")
         self.assertTrue(self.status("qwen-h3")["installed"] and self.status("qwen-text")["installed"])
 
     def test_second_install_and_repair_are_idempotent(self) -> None:
@@ -311,13 +318,14 @@ class OwnershipTests(LlamaRuntimeBase):
         self.assertTrue(self.runtime_ready())
         self.assertTrue(self.status("qwen-h3")["installed"])
 
-    def test_uninstalling_h3_keeps_runtime_required_by_text(self) -> None:
+    def test_uninstalling_h3_keeps_runtime_shared_with_text(self) -> None:
         self.install("qwen-h3"); self.install("qwen-text")
         plan = self.plan("qwen-h3")
-        self.assertEqual(self.kinds(plan, "component")[COMPONENT], KEEP_REQUIRED)
+        self.assertEqual(self.kinds(plan, "component")[COMPONENT], KEEP_SHARED)
         self.assertNotIn(COMPONENT, self.kinds(plan, "runtime"))
         self.p.uninstall("qwen-h3", self.comfy)
         self.assertTrue(self.runtime_ready())
+        self.assertTrue(self.status("qwen-text")["installed"])
 
     def test_last_consumer_removes_owned_runtime_only(self) -> None:
         self.install("qwen-h3"); self.install("qwen-text")

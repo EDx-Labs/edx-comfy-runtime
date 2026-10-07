@@ -9,7 +9,10 @@ from typing import Any, Mapping
 
 RESPONSE_FORMATS = ("text", "json")
 ENVELOPE_SCHEMA = "edx.text-task.result/v1"
-MODEL_LABEL = "qwen3.8-27b"
+# Default model of the text-only path (qwen-text / QwenTextTaskLocal): Qwen3-14B Q4_K_M, text-only (no vision projector).
+# The multimodal H3 node (QwenH3PromptLocal / qwen-h3) is unchanged: it keeps the Qwen3.8-27B + mmproj in models/LLM/Qwen3.8.
+TEXT_MODEL_SUBDIR = "Qwen3-14B"
+TEXT_MODEL_FILENAME = "Qwen3-14B-Q4_K_M.gguf"
 
 # Inference defaults of the text-only path (qwen-text / QwenTextTaskLocal), validated on an RTX 3050 6 GB:
 # 32768 ctx + fit-target 1536 offloaded 11/41 layers; 8192 + 768 offloads 18/41 with ~750 MiB real margin.

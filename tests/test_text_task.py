@@ -219,11 +219,11 @@ class DiscoveryTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_capability_is_discoverable_and_reuses_qwen_assets(self):
+    def test_capability_is_discoverable_and_shares_the_qwen_node_and_runtime(self):
         catalog = {c["id"]: c for c in self.provisioner.capability_catalog()}
         self.assertIn("text-task", catalog)
         reqs = catalog["text-task"]["providers"][0]["requirements"]
-        self.assertEqual(reqs["models"], ["qwen-h3-27b-q4", "qwen-h3-mmproj"])
+        self.assertEqual(reqs["models"], ["qwen3-14b-q4-k-m"])
         self.assertEqual(reqs["components"], ["qwen-h3-runtime"])
         self.assertIn("qwen-text-task", reqs["workflow_sets"])
         for rel in self.provisioner.workflow_sets["qwen-text-task"]["workflows"]:
