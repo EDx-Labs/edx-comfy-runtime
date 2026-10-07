@@ -78,15 +78,15 @@ class ProvisionerTests(unittest.TestCase):
     def test_fast_then_high_has_same_base_resources(self) -> None:
         fast = self.provisioner.plan("minimax-h3-fast", self.comfy)
         high = self.provisioner.plan("minimax-h3-high", self.comfy)
-        self.assertEqual(fast.components, high.components)
-        self.assertEqual(fast.models, high.models)
+        self.assertEqual([c for c in fast.components if c != "clipproj"], high.components)  # fast = base + ClipProj obrigatório
+        self.assertEqual([m for m in fast.models if m != "minimax-clipproj-4b"], high.models)
         self.assertEqual(fast.workflow_sets, high.workflow_sets)
 
     def test_high_reuses_fast_filesystem_resources(self) -> None:
         self.provisioner.models["qwen3vl-4b-fp8"].pop("size_bytes", None)
         self.provisioner.models["qwen3vl-4b-fp8"].pop("sha256", None)
         for stub in ("size_bytes", "sha256"):
-            for stubbed in ("minimax-video-vae", "minimax-fl2va-w4a8", "minimax-ref2va-w4a8"): self.provisioner.models[stubbed].pop(stub, None)  # arquivos de teste são placeholders
+            for stubbed in ("minimax-video-vae", "minimax-fl2va-w4a8", "minimax-ref2va-w4a8", "minimax-clipproj-4b"): self.provisioner.models[stubbed].pop(stub, None)  # arquivos de teste são placeholders
         fast = self.provisioner.plan("minimax-h3-fast", self.comfy)
         for component_id in fast.components:
             component = self.provisioner.components[component_id]

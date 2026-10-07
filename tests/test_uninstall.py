@@ -155,7 +155,7 @@ class MinimaxUninstallTests(UninstallBase):
         self.install("minimax-h3-fast"); self.install("minimax-h3-easy-continuation")
         plan = self.p.plan_uninstall("minimax-h3-easy-continuation", self.comfy)
         self.assertEqual(self.actions(plan)["minimax-fl2va-w4a8"], KEEP_SHARED)
-        self.assertEqual(self.actions(plan)["minimax-clipproj-4b"], REMOVE)
+        self.assertEqual(self.actions(plan)["minimax-clipproj-4b"], KEEP_SHARED)
         self.assertEqual(self.actions(plan, "component")["minimax-runtime"], KEEP_SHARED)
         self.assertEqual(self.actions(plan, "component")["minimax-h3-continuation"], REMOVE)
         self.assertEqual(self.actions(plan, "workflow_set")["minimax-h3-core"], KEEP_SHARED)
