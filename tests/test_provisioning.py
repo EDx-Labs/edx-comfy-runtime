@@ -85,7 +85,8 @@ class ProvisionerTests(unittest.TestCase):
     def test_high_reuses_fast_filesystem_resources(self) -> None:
         self.provisioner.models["qwen3vl-4b-fp8"].pop("size_bytes", None)
         self.provisioner.models["qwen3vl-4b-fp8"].pop("sha256", None)
-        for stub in ("size_bytes", "sha256"): self.provisioner.models["minimax-video-vae"].pop(stub, None)  # arquivos de teste são placeholders
+        for stub in ("size_bytes", "sha256"):
+            for stubbed in ("minimax-video-vae", "minimax-fl2va-w4a8", "minimax-ref2va-w4a8"): self.provisioner.models[stubbed].pop(stub, None)  # arquivos de teste são placeholders
         fast = self.provisioner.plan("minimax-h3-fast", self.comfy)
         for component_id in fast.components:
             component = self.provisioner.components[component_id]
