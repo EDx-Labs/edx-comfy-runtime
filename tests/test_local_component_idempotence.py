@@ -88,3 +88,20 @@ class LocalComponentIdempotenceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EmptyComponentSourceTests(unittest.TestCase):
+    def test_empty_component_source_is_an_error_not_a_ready_profile(self) -> None:
+        """Um submódulo não inicializado (diretório vazio) já foi 'instalado' como componente vazio."""
+        import tempfile
+        from pathlib import Path
+        from installer.provisioning import Provisioner, ProvisioningError
+        with tempfile.TemporaryDirectory() as directory:
+            comfy = Path(directory) / "ComfyUI"; (comfy / "models").mkdir(parents=True)
+            empty = Path(directory) / "empty-src"; empty.mkdir()
+            p = Provisioner()
+            p.components["x-empty"] = {"version": "1", "name": "x-empty", "source": str(empty)}
+            p.profiles["x-empty-profile"] = {"components": ["x-empty"], "models": [], "workflow_sets": []}
+            with mock.patch("installer.provisioning.ROOT", Path("/")):
+                with self.assertRaisesRegex(ProvisioningError, "vazia"):
+                    p.plan("x-empty-profile", comfy)

@@ -510,6 +510,7 @@ class Provisioner:
         for ident in components:
             component = self.components[ident]; source = ROOT / component["source"]; target = comfy / "custom_nodes" / component["name"]; marker = target / ".edx-component.json"
             if not source.is_dir(): raise ProvisioningError(f"fonte local ausente: {component['source']}")
+            if not any(source.iterdir()): raise ProvisioningError(f"fonte local vazia (submódulo não inicializado?): {component['source']}")
             if (marker.is_file() and read_json(marker).get("fingerprint") == fingerprint(source)) or (marker.is_file() and same_physical_tree(source, target)) or (target.exists() and os.path.samefile(source, target)):
                 result.already_installed.append("component:" + ident); result.reused_assets.append("component:" + ident)
             elif target.exists() and not marker.exists(): result.warnings.append(f"component:{ident} já existe e não é gerenciado pelo EDx; será preservado")
