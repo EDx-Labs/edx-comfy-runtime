@@ -1,0 +1,3 @@
+[submodule "integrations/image/krea2"]
+	path = integrations/image/krea2
+	url = https://github.com/KonokoAz/ComfyUI-Krea2-Reference.git

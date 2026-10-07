@@ -92,7 +92,7 @@
       ],
       "outputs": [{"name": "CONDITIONING", "type": "CONDITIONING", "links": [6]}],
       "properties": {"Node name for S&R": "TextEncodeKrea2Reference"},
-      "widgets_values": ["Redraw the character from image1 in the pose of image2, keeping the character's face, hairstyle, outfit and colors faithful to image1. Only one character in the image, no collage, no panels.", "high", "content", "low", "content", "high", "content", "high", "content", 0.0]
+      "widgets_values": ["Redraw the character from image1 in the pose of image2, keeping the character's face, hairstyle, outfit and colors faithful to image1. Only one character in the image, no collage, no panels.", "high", "low", "high", "high", 0.0]
     },
     {
       "id": 6,

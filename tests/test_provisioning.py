@@ -192,7 +192,7 @@ class ProvisionerTests(unittest.TestCase):
         plan = self.provisioner.plan("krea2-reference", self.comfy)
         self.assertEqual(plan.profiles, ["krea2-reference", "krea2"])
         self.assertEqual(len(plan.models), len(set(plan.models)))
-        self.assertEqual(plan.components, [])
+        self.assertEqual(plan.components, ["krea2-reference-runtime"])
         self.assertEqual(
             set(plan.models),
             {"krea2-turbo-fp8", "qwen3vl-4b-fp8", "qwen-image-vae", "qwen3vl-4b-bf16"},
@@ -222,7 +222,7 @@ class ProvisionerTests(unittest.TestCase):
         installation = self.provisioner.profile_installation("krea2-full", self.comfy)
         self.assertEqual(installation["total_bytes"], len(payloads["qwen3vl-4b-bf16"]))
         self.assertEqual(installation["pending_assets"], [
-            "model:qwen3vl-4b-bf16", "workflow_set:krea2-reference",
+            "component:krea2-reference-runtime", "model:qwen3vl-4b-bf16", "workflow_set:krea2-reference",
         ])
         self.provisioner.install(plan, skip_deps=True)
 
