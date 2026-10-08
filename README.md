@@ -92,3 +92,8 @@ Instancias provisionadas pelo Compute Manager usam o entrypoint independente
 `Provisioner`; o fluxo desktop acima nao le manifesto, nao requer token e nao
 envia callbacks. Contrato, seguranca, readiness e pendencias de integracao estao
 documentados em [`docs/remote-bootstrap.md`](docs/remote-bootstrap.md).
+
+O ambiente containerizado e o template operacional para Vast.ai estao em
+[`deploy/vast/Dockerfile`](deploy/vast/Dockerfile) e
+[`docs/vast-runtime.md`](docs/vast-runtime.md). Essa imagem usa o supervisor
+remoto opt-in e nao altera os comandos desktop.

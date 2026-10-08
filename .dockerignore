@@ -1,0 +1,16 @@
+.git
+.github
+.agents
+.codex
+.aws
+**/__pycache__
+**/*.py[cod]
+.pytest_cache
+.coverage
+htmlcov
+tests
+*.log
+*.partial
+bootstrap.json
+*token*
+*secret*

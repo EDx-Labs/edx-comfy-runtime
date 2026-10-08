@@ -397,6 +397,17 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(state["phase"], "READINESS_CONFIRMED")
         self.assertNotIn("secret-token", json.dumps(state))
 
+    def test_supervised_bootstrap_rejects_untracked_comfyui_before_callback(self):
+        class UntrackedController(FakeController):
+            def ensure_running(self, comfy, base_url, **kwargs):
+                self.calls.append((Path(comfy), base_url, kwargs))
+                return {"reused": True, "pid": None}
+
+        bootstrap, values = self.bootstrap(controller=UntrackedController())
+        with self.assertRaisesRegex(ReadinessError, "nao pode ser supervisionado"):
+            bootstrap.run(self.manifest, self.comfy, require_tracked_process=True)
+        self.assertEqual(values["callback_client"].calls, [])
+
     def test_restart_is_idempotent_and_callback_can_repeat(self):
         bootstrap, values = self.bootstrap()
         first = bootstrap.run(self.manifest, self.comfy)

@@ -23,7 +23,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from .provisioning import Provisioner, ProvisioningError, process_state, read_json, write_json
+from .provisioning import (
+    Provisioner,
+    ProvisioningCancelled,
+    ProvisioningError,
+    process_state,
+    read_json,
+    write_json,
+)
 from .runtime import BaseRuntimeInstaller, runtime_python
 
 
@@ -337,16 +344,36 @@ class ComfyUIController:
         except Exception:
             return False
 
-    def ensure_running(self, comfy: Path, base_url: str, *, host: str, port: int, timeout: float) -> dict[str, Any]:
-        if self._system_available(base_url):
-            return {"reused": True, "pid": None}
+    def ensure_running(
+        self,
+        comfy: Path,
+        base_url: str,
+        *,
+        host: str,
+        port: int,
+        timeout: float,
+        cancel_event=None,
+    ) -> dict[str, Any]:
+        def check_cancelled() -> None:
+            if cancel_event is not None and cancel_event.is_set():
+                raise ProvisioningCancelled("inicializacao do ComfyUI cancelada")
+
+        check_cancelled()
         state_path = self._state_path(comfy)
+        if self._system_available(base_url):
+            previous = read_json(state_path)
+            candidate = previous.get("pid")
+            pid = candidate if isinstance(candidate, int) and candidate > 0 else None
+            if pid is not None and process_state(pid) == "dead":
+                pid = None
+            return {"reused": True, "pid": pid}
         lock_path = state_path.with_name("remote-comfyui-start.lock")
         deadline = time.monotonic() + timeout
         pid: int | None = None
         tracked_alive = False
         process = None
         while time.monotonic() < deadline:
+            check_cancelled()
             if self._system_available(base_url):
                 return {"reused": True, "pid": pid}
             previous = read_json(state_path)
@@ -372,7 +399,11 @@ class ComfyUIController:
                     except FileNotFoundError:
                         pass
                     continue
-                self.sleeper(0.2)
+                if cancel_event is not None:
+                    if cancel_event.wait(0.2):
+                        check_cancelled()
+                else:
+                    self.sleeper(0.2)
                 continue
             try:
                 os.write(descriptor, json.dumps({"pid": os.getpid(), "created_at": time.time()}).encode("utf-8"))
@@ -412,11 +443,16 @@ class ComfyUIController:
                 except FileNotFoundError:
                     pass
         while time.monotonic() < deadline:
+            check_cancelled()
             if process is not None and process.poll() is not None:
                 raise ReadinessError("processo do ComfyUI encerrou durante a inicializacao")
             if self._system_available(base_url):
                 return {"reused": tracked_alive, "pid": pid}
-            self.sleeper(0.5)
+            if cancel_event is not None:
+                if cancel_event.wait(0.5):
+                    check_cancelled()
+            else:
+                self.sleeper(0.5)
         raise ReadinessError("ComfyUI nao ficou disponivel antes do timeout")
 
 
@@ -547,6 +583,8 @@ class RemoteBootstrap:
         host: str = "127.0.0.1",
         port: int = 8189,
         startup_timeout: float = 180.0,
+        cancel_event=None,
+        require_tracked_process: bool = False,
     ) -> dict[str, Any]:
         manifest_source = Path(manifest_path).expanduser()
         state_path = manifest_source.parent / "bootstrap-state.json"
@@ -556,19 +594,32 @@ class RemoteBootstrap:
             token = load_service_token(self.environment)
             self._write_state(state_path, manifest, "VALIDATED")
             comfy_root = Path(comfy).expanduser().resolve()
-            self.runtime_installer.ensure(comfy_root, backend=backend)
+            runtime_options: dict[str, Any] = {"backend": backend}
+            if cancel_event is not None:
+                runtime_options["cancel_event"] = cancel_event
+            self.runtime_installer.ensure(comfy_root, **runtime_options)
             self._write_state(state_path, manifest, "RUNTIME_READY", comfyui=str(comfy_root))
             provisioner = self.provisioner or Provisioner(python_executable=runtime_python(comfy_root))
             profiles = self._resolve_profiles(provisioner, manifest.capabilities)
             for profile in profiles:
                 plan = provisioner.plan(profile, comfy_root)
-                provisioner.install(plan)
+                install_options = {"cancel_event": cancel_event} if cancel_event is not None else {}
+                provisioner.install(plan, **install_options)
             self._verify_assets(provisioner, profiles, comfy_root)
             self._write_state(state_path, manifest, "PROVISIONED", profiles=profiles)
             base_url = f"http://{host}:{port}"
-            process = self.controller.ensure_running(
-                comfy_root, base_url, host=host, port=port, timeout=startup_timeout,
-            )
+            controller_options: dict[str, Any] = {
+                "host": host,
+                "port": port,
+                "timeout": startup_timeout,
+            }
+            if cancel_event is not None:
+                controller_options["cancel_event"] = cancel_event
+            process = self.controller.ensure_running(comfy_root, base_url, **controller_options)
+            if require_tracked_process:
+                tracked_pid = process.get("pid")
+                if not isinstance(tracked_pid, int) or tracked_pid <= 0:
+                    raise ReadinessError("processo do ComfyUI esta disponivel, mas nao pode ser supervisionado")
             system_stats = self.controller.api.get_json(base_url + "/system_stats")
             if not isinstance(system_stats, dict) or not system_stats:
                 raise ReadinessError("endpoint /system_stats vazio ou invalido")
@@ -576,6 +627,8 @@ class RemoteBootstrap:
             object_info = self.controller.api.get_json(base_url + "/object_info")
             self._verify_loaded_components(provisioner, profiles, object_info)
             self._write_state(state_path, manifest, "OPERATIONALLY_READY", profiles=profiles, process=process)
+            if cancel_event is not None and cancel_event.is_set():
+                raise ProvisioningCancelled("bootstrap cancelado antes do callback de readiness")
             status = self.callback_client.send(manifest, token)
             self._write_state(state_path, manifest, "READINESS_CONFIRMED", profiles=profiles, callback_status=status)
             return {
@@ -583,6 +636,7 @@ class RemoteBootstrap:
                 "provider_instance_id": manifest.provider_instance_id,
                 "profiles": profiles,
                 "callback_status": status,
+                "comfyui_pid": process.get("pid"),
                 "inference_validated": False,
             }
         except Exception as exc:

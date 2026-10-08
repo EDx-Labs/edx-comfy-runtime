@@ -25,10 +25,9 @@ de inferencia e registra explicitamente `inference_validated: false`.
 
 ## Contrato de manifesto isolado
 
-O schema 2 formal do Compute Manager nao esta versionado neste repositorio e
-nao foi encontrado no historico Git. Para evitar espalhar suposicoes pelo
-provisionador, o adaptador atual esta confinado a `Schema2ManifestParser` e
-aceita este envelope Runtime-side:
+O schema 2 continua confinado a `Schema2ManifestParser`, evitando espalhar o
+contrato do Compute Manager pelo provisionador. O envelope Runtime-side abaixo
+foi alinhado pelo Compute Manager no commit informado `81eed78`:
 
 ```json
 {
@@ -42,10 +41,9 @@ aceita este envelope Runtime-side:
 }
 ```
 
-Antes do primeiro deploy integrado, o Compute Manager precisa publicar o
-schema 2 real ou um fixture contratual. Se seus nomes ou o formato de
-`capabilities` forem diferentes, somente esse adaptador e seus testes devem ser
-ajustados; nao se deve adicionar aliases especulativos.
+O contrato nao e duplicado em outro arquivo neste repositorio. Se uma versao
+futura mudar nomes ou o formato de `capabilities`, somente esse adaptador e
+seus testes devem ser ajustados; nao se deve adicionar aliases especulativos.
 
 Validacoes aplicadas:
 
@@ -130,6 +128,7 @@ declarar a capability pronta. Um mecanismo confiavel para preaquecer esses
 snapshots deve ser acrescentado ao provisionador antes de usar tais profiles
 remotamente.
 
-Teste real em Vast.ai ainda depende de: fixture oficial do schema 2, injecao
-segura do token e da origem confiavel, acesso aos hosts de modelos, volume de
-cache persistente, GPU/driver compativeis e timeout do Compute Manager adequado.
+Teste real em Vast.ai ainda depende de: Compute Manager implantado numa revisao
+que contenha o contrato alinhado, injecao segura do token e da origem confiavel,
+acesso aos hosts de modelos, volume de cache persistente, GPU/driver compativeis
+e timeout do Compute Manager adequado.
