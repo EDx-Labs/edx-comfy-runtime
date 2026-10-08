@@ -84,3 +84,11 @@ python install_workflow.py chatterbox-tts --no-pip
 ```
 
 Os workflows são instalados em `ComfyUI/user/default/workflows/EDx/`.
+
+## Bootstrap remoto opt-in
+
+Instancias provisionadas pelo Compute Manager usam o entrypoint independente
+`python -m installer.remote_bootstrap`. Ele reutiliza o runtime base e o mesmo
+`Provisioner`; o fluxo desktop acima nao le manifesto, nao requer token e nao
+envia callbacks. Contrato, seguranca, readiness e pendencias de integracao estao
+documentados em [`docs/remote-bootstrap.md`](docs/remote-bootstrap.md).
