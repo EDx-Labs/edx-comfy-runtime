@@ -97,3 +97,6 @@ O ambiente containerizado e o template operacional para Vast.ai estao em
 [`deploy/vast/Dockerfile`](deploy/vast/Dockerfile) e
 [`docs/vast-runtime.md`](docs/vast-runtime.md). Essa imagem usa o supervisor
 remoto opt-in e nao altera os comandos desktop.
+
+O host simulado RT2.2, estritamente nao produtivo e sem ComfyUI/GPU/pesos,
+esta documentado em [`docs/simulated-runtime-host.md`](docs/simulated-runtime-host.md).
