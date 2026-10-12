@@ -1,0 +1,280 @@
+{
+  "schema": "bootstrap-env.schema.json",
+  "runtime_provider_variables": {
+    "vast": "CONTAINER_ID"
+  },
+  "$comment": "contract = verdict of bootstrap-env.schema.json on the file (the environment the Compute Manager sets). runtime = what the Runtime's environment materialiser does with it: accept (and the manifest it must generate) or reject (no file is written, the process exits with an error naming the variables, never their values). provider_environment = the variables the provider injects into the container itself.",
+  "cases": [
+    {
+      "file": "valid/canonical.json",
+      "contract": "valid",
+      "runtime": "accept",
+      "provider_environment": {
+        "CONTAINER_ID": "5000"
+      },
+      "manifest": {
+        "schema_version": 2,
+        "instance_id": "11111111-1111-4111-8111-111111111111",
+        "provider_instance_id": "5000",
+        "capabilities": [
+          "krea2",
+          "minimax"
+        ],
+        "callback": {
+          "readiness_url": "https://compute.example/api/v1/internal/instances/11111111-1111-4111-8111-111111111111/readiness"
+        }
+      },
+      "note": "The environment the Compute Manager sets for a slot created for two capabilities. The Runtime generates exactly the manifest below (provider_instance_id comes from the provider's CONTAINER_ID).",
+      "semantic": "ok"
+    },
+    {
+      "file": "valid/single-capability.json",
+      "contract": "valid",
+      "runtime": "accept",
+      "provider_environment": {
+        "CONTAINER_ID": "5000"
+      },
+      "manifest": {
+        "schema_version": 2,
+        "instance_id": "11111111-1111-4111-8111-111111111111",
+        "provider_instance_id": "5000",
+        "capabilities": [
+          "minimax"
+        ],
+        "callback": {
+          "readiness_url": "https://compute.example/api/v1/internal/instances/11111111-1111-4111-8111-111111111111/readiness"
+        }
+      },
+      "note": "One capability.",
+      "semantic": "ok"
+    },
+    {
+      "file": "valid/non-default-port.json",
+      "contract": "valid",
+      "runtime": "accept",
+      "provider_environment": {
+        "CONTAINER_ID": "5000"
+      },
+      "manifest": {
+        "schema_version": 2,
+        "instance_id": "11111111-1111-4111-8111-111111111111",
+        "provider_instance_id": "5000",
+        "capabilities": [
+          "krea2",
+          "minimax"
+        ],
+        "callback": {
+          "readiness_url": "https://compute.example:8443/api/v1/internal/instances/11111111-1111-4111-8111-111111111111/readiness"
+        }
+      },
+      "note": "An origin with a non-default port is part of the allow-list entry.",
+      "semantic": "ok"
+    },
+    {
+      "file": "invalid/missing-token.json",
+      "contract": "invalid",
+      "runtime": "reject",
+      "provider_environment": {
+        "CONTAINER_ID": "5000"
+      },
+      "manifest": null,
+      "note": "Without the credential the Runtime can never call back: it refuses to start (and writes no file)."
+    },
+    {
+      "file": "invalid/missing-capabilities.json",
+      "contract": "invalid",
+      "runtime": "reject",
+      "provider_environment": {
+        "CONTAINER_ID": "5000"
+      },
+      "manifest": null,
+      "note": "capabilities is required."
+    },
+    {
+      "file": "invalid/empty-capabilities.json",
+      "contract": "invalid",
+      "runtime": "reject",
+      "provider_environment": {
+        "CONTAINER_ID": "5000"
+      },
+      "manifest": null,
+      "note": "I-1 on the environment path: an empty list is refused by both sides (the Compute Manager never admits it)."
+    },
+    {
+      "file": "invalid/missing-instance-id.json",
+      "contract": "invalid",
+      "runtime": "reject",
+      "provider_environment": {
+        "CONTAINER_ID": "5000"
+      },
+      "manifest": null,
+      "note": "instance id is required."
+    },
+    {
+      "file": "invalid/missing-readiness-url.json",
+      "contract": "invalid",
+      "runtime": "reject",
+      "provider_environment": {
+        "CONTAINER_ID": "5000"
+      },
+      "manifest": null,
+      "note": "callback is required."
+    },
+    {
+      "file": "invalid/schema-version-3.json",
+      "contract": "invalid",
+      "runtime": "reject",
+      "provider_environment": {
+        "CONTAINER_ID": "5000"
+      },
+      "manifest": null,
+      "note": "A schema this Runtime does not speak is refused, never approximated."
+    },
+    {
+      "file": "invalid/readiness-url-http.json",
+      "contract": "invalid",
+      "runtime": "reject",
+      "provider_environment": {
+        "CONTAINER_ID": "5000"
+      },
+      "manifest": null,
+      "note": "An external callback must be https."
+    },
+    {
+      "file": "invalid/readiness-url-with-query.json",
+      "contract": "invalid",
+      "runtime": "reject",
+      "provider_environment": {
+        "CONTAINER_ID": "5000"
+      },
+      "manifest": null,
+      "note": "No query or fragment, never a credential in a URL."
+    },
+    {
+      "file": "valid/readiness-url-wrong-instance.json",
+      "contract": "valid",
+      "runtime": "reject",
+      "provider_environment": {
+        "CONTAINER_ID": "5000"
+      },
+      "manifest": null,
+      "note": "Shape-valid, but the route belongs to ANOTHER instance (cross-field rule: the schema checks the shape, the Runtime and the tests the equality).",
+      "semantic": "violation"
+    },
+    {
+      "file": "invalid/token-with-whitespace.json",
+      "contract": "invalid",
+      "runtime": "reject",
+      "provider_environment": {
+        "CONTAINER_ID": "5000"
+      },
+      "manifest": null,
+      "note": "A credential never contains whitespace or control characters."
+    },
+    {
+      "file": "invalid/admin-service-token-present.json",
+      "contract": "invalid",
+      "runtime": "accept",
+      "provider_environment": {
+        "CONTAINER_ID": "5000"
+      },
+      "manifest": {
+        "schema_version": 2,
+        "instance_id": "11111111-1111-4111-8111-111111111111",
+        "provider_instance_id": "5000",
+        "capabilities": [
+          "krea2",
+          "minimax"
+        ],
+        "callback": {
+          "readiness_url": "https://compute.example/api/v1/internal/instances/11111111-1111-4111-8111-111111111111/readiness"
+        }
+      },
+      "note": "The producer NEVER sends the administrative service token. A Runtime that finds one in its environment ignores it, never uses it for the callback and removes it from every child process."
+    },
+    {
+      "file": "invalid/capability-uppercase.json",
+      "contract": "invalid",
+      "runtime": "accept",
+      "provider_environment": {
+        "CONTAINER_ID": "5000"
+      },
+      "manifest": {
+        "schema_version": 2,
+        "instance_id": "11111111-1111-4111-8111-111111111111",
+        "provider_instance_id": "5000",
+        "capabilities": [
+          "krea2",
+          "minimax"
+        ],
+        "callback": {
+          "readiness_url": "https://compute.example/api/v1/internal/instances/11111111-1111-4111-8111-111111111111/readiness"
+        }
+      },
+      "note": "Tolerant reader, as for the manifest file: the Runtime normalises to lower case. A producer must not emit it."
+    },
+    {
+      "file": "invalid/instance-id-not-uuid.json",
+      "contract": "invalid",
+      "runtime": "accept",
+      "provider_environment": {
+        "CONTAINER_ID": "5000"
+      },
+      "manifest": {
+        "schema_version": 2,
+        "instance_id": "not-a-uuid",
+        "provider_instance_id": "5000",
+        "capabilities": [
+          "krea2",
+          "minimax"
+        ],
+        "callback": {
+          "readiness_url": "https://compute.example/api/v1/internal/instances/not-a-uuid/readiness"
+        }
+      },
+      "note": "Tolerant reader: the Runtime accepts any identifier of its own grammar. A producer must not emit it."
+    },
+    {
+      "file": "valid/origin-not-in-allow-list.json",
+      "contract": "valid",
+      "runtime": "reject",
+      "provider_environment": {
+        "CONTAINER_ID": "5000"
+      },
+      "manifest": null,
+      "note": "Shape-valid, but the callback origin is not the allow-listed one: the Runtime refuses it (cross-field rule). The Compute Manager always sends the callback's own origin.",
+      "semantic": "violation"
+    },
+    {
+      "file": "valid/no-provider-id-variable.json",
+      "contract": "valid",
+      "runtime": "reject",
+      "provider_environment": {},
+      "manifest": null,
+      "note": "The environment is complete but the provider injected no instance id (CONTAINER_ID missing): the Runtime cannot know which provider instance it is and refuses to start.",
+      "semantic": "ok"
+    },
+    {
+      "file": "valid/provider-id-with-prefix.json",
+      "contract": "valid",
+      "runtime": "accept",
+      "provider_environment": {
+        "CONTAINER_ID": "C.5000"
+      },
+      "manifest": {
+        "schema_version": 2,
+        "instance_id": "11111111-1111-4111-8111-111111111111",
+        "provider_instance_id": "5000",
+        "capabilities": [
+          "krea2",
+          "minimax"
+        ],
+        "callback": {
+          "readiness_url": "https://compute.example/api/v1/internal/instances/11111111-1111-4111-8111-111111111111/readiness"
+        }
+      },
+      "note": "The provider variable in the 'C.<id>' label form is normalised to the numeric id (real format to be confirmed on Vast: see bootstrap-manifest.md).",
+      "semantic": "ok"
+    }
+  ]
+}

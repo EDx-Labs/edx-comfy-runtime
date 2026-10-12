@@ -1,0 +1,72 @@
+{
+  "$comment": "Verdict per identifier grammar in common.schema.json. tests/test_contracts.py also replays these against the live Django serializer, and edx-comfy-runtime replays providerInstanceId/capabilityId against its own parser grammar.",
+  "externalRequestId": {
+    "valid": [
+      "req-1",
+      "a",
+      "cp.prod.0b3d6c52-6b53-4f73-8a39-2f6a9f1f0c11.1",
+      "A.b_c:d-e",
+      "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    ],
+    "invalid": [
+      "",
+      "bad id!",
+      "with/slash",
+      "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "acentuação",
+      "tab\tchar"
+    ]
+  },
+  "cpExternalRequestId": {
+    "valid": [
+      "cp.prod.0b3d6c52-6b53-4f73-8a39-2f6a9f1f0c11.1",
+      "cp.staging.0b3d6c52-6b53-4f73-8a39-2f6a9f1f0c11.12",
+      "cp.p1.0b3d6c52-6b53-4f73-8a39-2f6a9f1f0c11.999"
+    ],
+    "invalid": [
+      "cp.prod.0b3d6c52-6b53-4f73-8a39-2f6a9f1f0c11.0",
+      "cp.prod.0b3d6c52-6b53-4f73-8a39-2f6a9f1f0c11.1000",
+      "cp.PROD.0b3d6c52-6b53-4f73-8a39-2f6a9f1f0c11.1",
+      "cp.prod.not-a-uuid.1",
+      "xx.prod.0b3d6c52-6b53-4f73-8a39-2f6a9f1f0c11.1",
+      "cp.prod.0B3D6C52-6B53-4F73-8A39-2F6A9F1F0C11.1",
+      "cp..0b3d6c52-6b53-4f73-8a39-2f6a9f1f0c11.1"
+    ]
+  },
+  "capabilityId": {
+    "valid": [
+      "minimax",
+      "krea2",
+      "krea2-reference",
+      "seedvr2",
+      "minimax-h3-fast",
+      "a",
+      "a.b_c-d"
+    ],
+    "invalid": [
+      "",
+      "Bad Cap",
+      "MiniMax",
+      "-leading",
+      ".leading",
+      "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "has space"
+    ]
+  },
+  "providerInstanceId": {
+    "valid": [
+      "5000",
+      "C.5000",
+      "a",
+      "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    ],
+    "invalid": [
+      "",
+      "-1",
+      ".5",
+      "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "with space",
+      "a/b"
+    ]
+  }
+}

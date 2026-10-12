@@ -1,0 +1,17 @@
+{
+  "$comment": "Capability ids exchanged between systems. 'canonical_control_plane_ids' MUST equal the ids seeded into the Control Plane capabilities table (V4__reference_data.sql); the Control Plane test asserts it. The Runtime test resolves each canonical id with its real Provisioner.",
+  "canonical_control_plane_ids": [
+    "minimax",
+    "krea2",
+    "krea2-reference",
+    "seedvr2"
+  ],
+  "runtime_resolvable_extra_examples": [
+    "minimax-h3-fast",
+    "minimax_h3"
+  ],
+  "runtime_unresolvable_examples": [
+    "minimax-h3"
+  ],
+  "unresolvable_note": "Known incompatibility I-2: 'minimax-h3' appears in Compute Manager docs and tests but is neither a Runtime profile, capability, alias nor provider, so an instance booted with it fails readiness."
+}

@@ -1,0 +1,11 @@
+{
+  "schema_version": 2,
+  "instance_id": "inst-123",
+  "provider_instance_id": "5000",
+  "capabilities": [
+    "minimax-h3-fast"
+  ],
+  "callback": {
+    "readiness_url": "https://compute.example/api/v1/internal/instances/inst-123/readiness"
+  }
+}

@@ -1,0 +1,99 @@
+{
+  "schema": "bootstrap-manifest.schema.json",
+  "runtime_environment": {
+    "EDX_COMPUTE_MANAGER_TRUSTED_ORIGINS": "https://compute.example"
+  },
+  "cases": [
+    {
+      "file": "valid/canonical.json",
+      "schema_verdict": "valid",
+      "semantic": "ok",
+      "runtime_parser": "accept",
+      "note": "Byte-identical to tests/fixtures/runtime_bootstrap_manifest.v2.json (asserted)."
+    },
+    {
+      "file": "valid/multi-capability.json",
+      "schema_verdict": "valid",
+      "semantic": "ok",
+      "runtime_parser": "accept",
+      "note": "Several capabilities, sorted, using ids the Control Plane really uses."
+    },
+    {
+      "file": "invalid/empty-capabilities.json",
+      "schema_verdict": "invalid",
+      "semantic": "ok",
+      "runtime_parser": "reject",
+      "note": "KNOWN INCOMPATIBILITY I-1: the Compute Manager can currently emit this for a request without required_capabilities; the Runtime refuses it, so the instance would never confirm readiness."
+    },
+    {
+      "file": "invalid/schema-version-1.json",
+      "schema_verdict": "invalid",
+      "semantic": "ok",
+      "runtime_parser": "reject",
+      "note": "Old schema."
+    },
+    {
+      "file": "invalid/schema-version-3.json",
+      "schema_verdict": "invalid",
+      "semantic": "ok",
+      "runtime_parser": "reject",
+      "note": "A future schema must not be half-understood by a schema 2 reader."
+    },
+    {
+      "file": "invalid/missing-callback.json",
+      "schema_verdict": "invalid",
+      "semantic": "ok",
+      "runtime_parser": "reject",
+      "note": "Required object."
+    },
+    {
+      "file": "invalid/callback-with-query.json",
+      "schema_verdict": "invalid",
+      "semantic": "ok",
+      "runtime_parser": "reject",
+      "note": "No query or fragment in the readiness URL."
+    },
+    {
+      "file": "invalid/callback-wrong-instance.json",
+      "schema_verdict": "valid",
+      "semantic": "violation",
+      "runtime_parser": "reject",
+      "note": "Schema-valid but the URL belongs to another instance: the cross-field rule is enforced by tests and by the Runtime."
+    },
+    {
+      "file": "invalid/callback-http.json",
+      "schema_verdict": "invalid",
+      "semantic": "ok",
+      "runtime_parser": "reject",
+      "note": "HTTP is accepted by the Runtime only for explicit loopback test setups."
+    },
+    {
+      "file": "invalid/extra-top-level-key.json",
+      "schema_verdict": "invalid",
+      "semantic": "ok",
+      "runtime_parser": "accept",
+      "note": "Tolerant reader: the Runtime ignores unknown keys. Producers must still not emit them in schema 2."
+    },
+    {
+      "file": "invalid/provider-id-integer.json",
+      "schema_verdict": "invalid",
+      "semantic": "ok",
+      "runtime_parser": "accept",
+      "note": "Tolerant reader: the Runtime coerces integers. Producers emit strings."
+    },
+    {
+      "file": "invalid/instance-id-not-uuid.json",
+      "schema_verdict": "invalid",
+      "semantic": "ok",
+      "runtime_parser": "accept",
+      "note": "Tolerant reader: any identifier-shaped instance_id. Producers emit UUIDs."
+    },
+    {
+      "file": "invalid/capability-uppercase.json",
+      "schema_verdict": "invalid",
+      "semantic": "ok",
+      "runtime_parser": "accept",
+      "note": "Tolerant reader: the Runtime lower-cases capabilities."
+    }
+  ]
+}

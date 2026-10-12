@@ -1,0 +1,46 @@
+{
+  "schema": "readiness.schema.json#/$defs/request",
+  "runtime_sends": "valid/minimal.json",
+  "cases": [
+    {
+      "file": "valid/minimal.json",
+      "contract": "valid",
+      "note": "Exactly what the Runtime sends for manifest provider_instance_id '5000'."
+    },
+    {
+      "file": "valid/dotted-id.json",
+      "contract": "valid",
+      "note": "Shape CONTAINER_ID might take; its real format is unverified until the first supervised smoke (README, open question Q-2)."
+    },
+    {
+      "file": "invalid/missing.json",
+      "contract": "invalid",
+      "note": "Required."
+    },
+    {
+      "file": "invalid/empty.json",
+      "contract": "invalid",
+      "note": "allow_blank=False on the server."
+    },
+    {
+      "file": "invalid/integer.json",
+      "contract": "invalid",
+      "note": "String only (the server's CharField would coerce; the contract does not promise it)."
+    },
+    {
+      "file": "invalid/extra-key.json",
+      "contract": "invalid",
+      "note": "Strict body: state transitions are decided by the server."
+    },
+    {
+      "file": "invalid/leading-dash.json",
+      "contract": "invalid",
+      "note": "Rejected by the Runtime identifier grammar."
+    },
+    {
+      "file": "invalid/too-long.json",
+      "contract": "invalid",
+      "note": "Server stores at most 64 characters."
+    }
+  ]
+}
