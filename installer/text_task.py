@@ -39,6 +39,14 @@ TIMEOUT = "TIMEOUT"
 CONTEXT_EXCEEDED = "CONTEXT_EXCEEDED"
 RUNTIME_CONFIG_INVALID = "RUNTIME_CONFIG_INVALID"
 CANCELLED = "CANCELLED"
+JOB_LOST = "JOB_LOST"
+
+# Waiting policy (see TextTaskClient.run). Queue time never counts; silence only counts once the prompt is running, and
+# even then it is only REPORTED (STALLED_SUSPECTED): the client never cancels a task by itself because of silence.
+QUEUE_INTERVAL_S = 2.0        # queue reconciliation while waiting in the queue / before it is known to run
+RUNNING_QUEUE_INTERVAL_S = 15.0
+LOST_CONFIRMATIONS = 2        # consecutive probes where the server knows the prompt neither in queue nor in history
+LOST_MIN_AGE_S = 10.0
 
 
 class TextTaskError(RuntimeError):
@@ -63,6 +71,10 @@ class TextTaskRequest:
     max_tokens: int = 2048
     temperature: float = 0.2
     seed: int = 0
+    # Inactivity threshold, counted only while the prompt is RUNNING in ComfyUI; time spent queued behind other jobs never
+    # counts. Reaching it marks the task as suspected-stalled (reported through ``on_state``) and the client keeps waiting
+    # for as long as the server keeps the job: it is never cancelled because of silence. Only the caller can stop it
+    # (``cancel_event``), and that cancels ONLY this task's own prompt.
     timeout_s: float = 600.0
 
     def validate(self) -> None:
@@ -115,7 +127,8 @@ class HttpTransport:
                 parsed: Any = json.loads(detail)
             except json.JSONDecodeError:
                 parsed = detail
-            raise TextTaskError(COMFY_REJECTED, f"ComfyUI HTTP {error.code}", details={"body": parsed}) from error
+            raise TextTaskError(COMFY_REJECTED, f"ComfyUI HTTP {error.code}",
+                                details={"body": parsed, "status": error.code}) from error
         except (urllib.error.URLError, OSError) as error:
             raise TextTaskError(RUNTIME_UNAVAILABLE, "ComfyUI is not reachable", details={"reason": str(error)}) from error
         return json.loads(body.decode("utf-8")) if body else {}
@@ -168,13 +181,73 @@ class TextTaskClient:
         self.sleeper = sleeper
         self.clock = clock
 
-    def _interrupt(self) -> None:
+    # -- cancellation: ONLY this client's own prompt -----------------------------------------------------------------
+    def _cancel(self, prompt_id: str) -> None:
+        """Best-effort cancel of ``prompt_id`` and nothing else.
+
+        Never ``POST /interrupt`` without a ``prompt_id``: ComfyUI treats that as a GLOBAL interrupt of whatever is running,
+        which killed other projects' 15-minute video jobs when a queued text task timed out (run-d499577ba91b).
+        ComfyUI >= 0.33 has ``POST /api/jobs/{id}/cancel`` (atomic: dequeues a pending job, interrupts a running one only
+        while it is still the one running, no-op for finished/unknown ids). Older servers fall back to deleting the pending
+        item or to a targeted interrupt.
+        """
         try:
-            self.transport.post_json("/interrupt", {})
+            self.transport.post_json(f"/api/jobs/{prompt_id}/cancel", {})
+            return
+        except TextTaskError as error:
+            if error.code != COMFY_REJECTED or error.details.get("status") not in (404, 405):
+                return  # unreachable or refused: do not improvise a broader action
+        try:
+            location = self._locate(prompt_id)[0]
+            if location == "pending":
+                self.transport.post_json("/queue", {"delete": [prompt_id]})
+            elif location == "running":
+                self.transport.post_json("/interrupt", {"prompt_id": prompt_id})
         except TextTaskError:
             pass
 
-    def run(self, request: TextTaskRequest, *, cancel_event: threading.Event | None = None) -> TextTaskResult:
+    # -- observation ------------------------------------------------------------------------------------------------
+    def _locate(self, prompt_id: str) -> tuple[str, int | None, int | None]:
+        """('pending'|'running'|'absent'|'unknown', 1-based position among pending, jobs ahead incl. the running one)."""
+        try:
+            queue = self.transport.get_json("/queue")
+        except TextTaskError:
+            return "unknown", None, None
+        if not isinstance(queue, dict) or "queue_running" not in queue or "queue_pending" not in queue:
+            return "unknown", None, None
+
+        def pid(item: Any) -> Any:
+            return item[1] if isinstance(item, (list, tuple)) and len(item) > 1 else None
+
+        running = list(queue.get("queue_running") or [])
+        if any(pid(item) == prompt_id for item in running):
+            return "running", None, None
+        pending = sorted(queue.get("queue_pending") or [],
+                         key=lambda item: item[0] if isinstance(item, (list, tuple)) and item and isinstance(item[0], (int, float)) else 0)
+        for index, item in enumerate(pending):
+            if pid(item) == prompt_id:
+                return "pending", index + 1, len(running) + index
+        return "absent", None, None
+
+    @staticmethod
+    def _emit(on_state: Callable[..., None] | None, state: str, **info: Any) -> None:
+        if on_state is not None:
+            try:
+                on_state(state, info)
+            except Exception:  # telemetry must never change the outcome of the task
+                pass
+
+    def run(self, request: TextTaskRequest, *, cancel_event: threading.Event | None = None,
+            on_state: Callable[[str, dict[str, Any]], None] | None = None) -> TextTaskResult:
+        """Submit, wait and return the result.
+
+        Waiting policy: while the prompt is queued behind other jobs nothing times out (the wait is only reported through
+        ``on_state``). ``timeout_s`` is an inactivity threshold that runs from the moment the prompt is seen RUNNING; when it
+        is reached the task is reported STALLED_SUSPECTED and the client keeps waiting: silence, a flat server or a lost
+        connection never cancel it. It ends by result, by ``cancel_event`` (which cancels just its own prompt) or, if the
+        server no longer knows the prompt (restart), with JOB_LOST.
+        If the queue cannot be read at all, the clock starts at submission (the only safe approximation).
+        """
         request.validate()
         workflow = build_workflow(request, self.workflow_path)
         submitted = self.transport.post_json("/prompt", {"prompt": workflow, "client_id": uuid.uuid4().hex})
@@ -183,17 +256,61 @@ class TextTaskClient:
         prompt_id = submitted.get("prompt_id")
         if not prompt_id:
             raise TextTaskError(COMFY_REJECTED, "ComfyUI did not return a prompt_id", details={"response": submitted})
-        deadline = self.clock() + float(request.timeout_s)
+
+        timeout_s = float(request.timeout_s)
+        queued_at = self.clock()
+        started_at: float | None = None
+        queue_known = False
+        stalled = False
+        absent = 0
+        position: tuple[int | None, int | None] = (None, None)
+        next_queue = queued_at
+        self._emit(on_state, "QUEUED", prompt_id=prompt_id)
         while True:
             if cancel_event is not None and cancel_event.is_set():
-                self._interrupt()
+                self._cancel(prompt_id)
+                self._emit(on_state, "CANCELLED", prompt_id=prompt_id)
                 raise TextTaskError(CANCELLED, "text task cancelled", details={"prompt_id": prompt_id})
             entry = (self.transport.get_json(f"/history/{prompt_id}") or {}).get(prompt_id)
             if entry:
-                return self._finish(prompt_id, entry)
-            if self.clock() >= deadline:
-                self._interrupt()
-                raise TextTaskError(TIMEOUT, f"text task exceeded {request.timeout_s:g}s", details={"prompt_id": prompt_id})
+                try:
+                    result = self._finish(prompt_id, entry)
+                except TextTaskError as error:
+                    self._emit(on_state, "CANCELLED" if error.code == CANCELLED else "FAILED", prompt_id=prompt_id, code=error.code)
+                    raise
+                self._emit(on_state, "COMPLETED", prompt_id=prompt_id)
+                return result
+            now = self.clock()
+            location = "unknown"
+            if now >= next_queue:
+                location, ahead_position, ahead = self._locate(prompt_id)
+                next_queue = now + (RUNNING_QUEUE_INTERVAL_S if started_at is not None and not stalled else QUEUE_INTERVAL_S)
+                if location != "unknown":
+                    queue_known = True
+                if location == "pending":
+                    absent = 0
+                    if (ahead_position, ahead) != position:
+                        position = (ahead_position, ahead)
+                        self._emit(on_state, "QUEUED", prompt_id=prompt_id, position=ahead_position, ahead=ahead,
+                                   waited_seconds=round(now - queued_at, 1))
+                elif location == "running":
+                    absent = 0
+                    if started_at is None:
+                        started_at = now
+                        self._emit(on_state, "RUNNING", prompt_id=prompt_id, waited_seconds=round(now - queued_at, 1))
+                elif location == "absent":
+                    absent += 1
+                    if absent >= LOST_CONFIRMATIONS and now - queued_at >= LOST_MIN_AGE_S:
+                        self._emit(on_state, "FAILED", prompt_id=prompt_id, code=JOB_LOST)
+                        raise TextTaskError(JOB_LOST, "ComfyUI no longer knows this text task (server restarted?)",
+                                            details={"prompt_id": prompt_id})
+            # the inference clock: starts when the prompt runs; if the queue can never be read, at submission
+            origin = started_at if started_at is not None else (queued_at if not queue_known else None)
+            if origin is not None:
+                silence = now - origin
+                if silence >= timeout_s and not stalled:
+                    stalled = True
+                    self._emit(on_state, "STALLED_SUSPECTED", prompt_id=prompt_id, silence_seconds=round(silence, 1))
             self.sleeper(self.poll_interval)
 
     @staticmethod
