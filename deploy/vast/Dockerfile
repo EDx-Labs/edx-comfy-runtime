@@ -24,7 +24,7 @@ RUN apt-get update \
         pkg-config \
         tini \
     && rm -rf /var/lib/apt/lists/* \
-    && install -d -m 0755 /opt/edx-comfy-runtime /workspace /workspace/.edx /run/secrets
+    && install -d -m 0755 /opt/edx-comfy-runtime /workspace \n    && install -d -m 0700 /workspace/.edx /run/secrets
 
 WORKDIR /opt/edx-comfy-runtime
 
@@ -36,4 +36,6 @@ COPY workflows ./workflows
 COPY install_workflow.py README.md ./
 
 STOPSIGNAL SIGTERM
-ENTRYPOINT ["/usr/bin/tini", "--", "python", "-m", "installer.remote_supervisor"]
+# O launcher materializa o bootstrap (arquivos 0600) e executa `tini -- python -m installer.remote_supervisor` com ambiente sanitizado:
+# nenhum processo definitivo nasce com os segredos entregues pela criacao da instancia (RT2.1). O tini continua sendo o PID 1 depois do exec.
+ENTRYPOINT ["python", "-m", "installer.remote_launcher"]

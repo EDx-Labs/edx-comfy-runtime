@@ -25,6 +25,7 @@ from .remote_bootstrap import (
     RemoteBootstrapError,
     load_service_token,
 )
+from .remote_env import delivery_requested
 
 
 WAIT_TIMEOUT_ENV = "EDX_BOOTSTRAP_WAIT_TIMEOUT"
@@ -338,6 +339,14 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--wait-timeout deve ser zero (ilimitado) ou positivo")
         if args.poll_interval <= 0 or args.shutdown_timeout <= 0 or args.startup_timeout <= 0:
             parser.error("intervalos e timeouts de shutdown/startup devem ser positivos")
+        # RT2.1: a entrega por ambiente e materializada pelo LAUNCHER (o ENTRYPOINT da imagem), que depois executa o tini e este supervisor com um
+        # ambiente novo e sem segredos. Se variaveis EDX_BOOTSTRAP_* chegaram ate aqui, este processo foi iniciado fora do launcher: nasceu com o ambiente
+        # original (legivel em /proc/<pid>/environ), entao a entrega e recusada em vez de aceita pela metade.
+        if delivery_requested(os.environ):
+            raise RemoteSupervisorError(
+                "entrega de bootstrap por ambiente detectada fora do launcher: inicie o Runtime pelo ENTRYPOINT da imagem "
+                "(python -m installer.remote_launcher), que grava os arquivos e remove os segredos do ambiente de todos os processos"
+            )
         stop_event = threading.Event()
 
         def request_shutdown(signum, frame) -> None:

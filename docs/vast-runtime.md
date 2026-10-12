@@ -1,6 +1,6 @@
 # Ambiente remoto Vast.ai
 
-Este ambiente e opt-in. A imagem inicia `installer.remote_supervisor`; os
+Este ambiente e opt-in. A imagem inicia `installer.remote_launcher`, que grava o bootstrap e executa `tini -- python -m installer.remote_supervisor`; os
 entrypoints desktop (`install_workflow.py` e a integracao local do Studio) nao
 importam nem executam o supervisor.
 
@@ -47,7 +47,7 @@ Vast substituem o entrypoint original da imagem; caso sejam usados para
 diagnostico, o comando abaixo precisa ser configurado como on-start:
 
 ```bash
-python -m installer.remote_supervisor
+python -m installer.remote_launcher
 ```
 
 Monte armazenamento persistente em `/workspace`. Um volume Vast local e
@@ -63,12 +63,17 @@ O usuario do container precisa escrever em:
 - `/workspace/.cache` (pip, Torch e Hugging Face);
 - `/run/secrets` somente para a entrega do segredo.
 
-Variaveis obrigatorias:
+Variaveis obrigatorias. Com a entrega por ambiente (CM5 + RT1) o **Compute Manager as define por instancia** na chamada de criacao (veja
+`docs/remote-bootstrap.md`, 'Entrega por ambiente da instancia'); o template nao deve guardar nenhum segredo:
 
 ```text
-EDX_COMPUTE_MANAGER_TRUSTED_ORIGINS=https://compute.example
-EDX_COMPUTE_MANAGER_SERVICE_TOKEN_FILE=/run/secrets/edx-compute-manager-token
+EDX_BOOTSTRAP_SCHEMA_VERSION, EDX_BOOTSTRAP_INSTANCE_ID, EDX_BOOTSTRAP_CAPABILITIES, EDX_BOOTSTRAP_READINESS_URL,
+EDX_COMPUTE_MANAGER_TRUSTED_ORIGINS, EDX_BOOTSTRAP_READINESS_TOKEN   (todas por instancia, do Compute Manager)
+CONTAINER_ID                                                         (injetada pela Vast)
+EDX_COMPUTE_MANAGER_SERVICE_TOKEN_FILE=/run/secrets/edx-compute-manager-token   (padrao da imagem; o entrypoint cria o arquivo 0600)
 ```
+
+Sem as variaveis `EDX_BOOTSTRAP_*` o fluxo anterior continua valendo: outro produtor cria o manifesto e o arquivo de credencial.
 
 Variaveis opcionais:
 
@@ -106,11 +111,15 @@ segredo acessivel pelo grupo/outros e links simbolicos.
 
 A Vast oferece variaveis de conta criptografadas em repouso e injetadas como
 variaveis de ambiente. A documentacao publica consultada nao oferece um mount
-nativo equivalente a Docker Secrets nas opcoes do template. Portanto, a
-entrega de um arquivo privado ainda precisa ser implementada pelo Compute
-Manager ou pela operacao da instancia. Transformar uma variavel de ambiente em
-arquivo num script on-start e possivel, mas nao equivale a um canal de segredo
-baseado em arquivo e nao deve ser declarado como solucao definitiva.
+nativo equivalente a Docker Secrets nas opcoes do template. Por isso o RT1
+usa o ambiente por instancia como canal e **minimiza o que ele carrega**: so o
+token escopado da propria instancia (declara READY para ela, ate o TTL, e nada
+mais), que o entrypoint grava em arquivo 0600 e remove do ambiente antes de
+qualquer processo filho. O ambiente continua legivel pelo host do provedor e,
+dentro do container, por `/proc/1/environ`; um token administrativo nunca deve
+ser entregue assim (e, se aparecer no ambiente, o entrypoint o ignora e remove).
+Variaveis de conta da Vast sao injetadas em **todo** container: nao guarde ali
+segredos administrativos.
 
 ## GPU, rede e persistencia
 
@@ -134,7 +143,7 @@ a perda/migracao da maquina que o hospeda.
 
 ## Ciclo de vida
 
-1. `tini` inicia o supervisor.
+1. O launcher materializa o bootstrap (se entregue por ambiente) e executa `tini`, que inicia o supervisor com o ambiente sanitizado.
 2. O supervisor adquire `/workspace/.edx/remote-supervisor.lock`.
 3. Ele espera manifesto completo e credencial valida.
 4. O bootstrap instala/reutiliza o Runtime e valida as capabilities.
@@ -156,7 +165,8 @@ mas nao validam driver/CUDA, tempo real de download, carga de custom nodes ou
 inferencia. O primeiro smoke precisa confirmar tambem:
 
 - publicacao e pull da imagem imutavel;
-- canal do Compute Manager para escrever o segredo `0600` e o manifesto;
+- que o `env` por instancia enviado na criacao com `template_hash_id` chega ao entrypoint (o formato do campo, a mesclagem por chave com o ambiente do
+  template, limite de tamanho) e que `CONTAINER_ID` e o id numerico devolvido pela criacao;
 - oferta Vast com driver compativel e disco/volume suficientes;
 - allowlist de egress e certificado do callback;
 - tempo de cold start versus o timeout atual de readiness de 600 segundos.

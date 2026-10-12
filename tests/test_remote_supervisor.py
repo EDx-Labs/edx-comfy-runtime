@@ -239,9 +239,12 @@ class RemoteSupervisorTests(unittest.TestCase):
         self.assertEqual(calls, [(2468, 7)])
 
     def test_docker_entrypoint_uses_supervisor_and_contains_no_secret(self):
+        from installer import remote_launcher
+
         dockerfile = Path("deploy/vast/Dockerfile").read_text(encoding="utf-8")
-        self.assertIn('"installer.remote_supervisor"', dockerfile)
-        self.assertIn("/usr/bin/tini", dockerfile)
+        self.assertIn('"installer.remote_launcher"', dockerfile)  # RT2.1: the ENTRYPOINT is the launcher, which executes tini and the supervisor
+        self.assertIn("tini", dockerfile)
+        self.assertEqual(remote_launcher.supervisor_argv([]), ["/usr/bin/tini", "--", "python", "-m", "installer.remote_supervisor"])
         self.assertIn("EDX_COMPUTE_MANAGER_SERVICE_TOKEN_FILE", dockerfile)
         self.assertNotIn("test-service-token", dockerfile)
 
