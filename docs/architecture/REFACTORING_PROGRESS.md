@@ -4,7 +4,7 @@
 
 - Repositório: `edx-comfy-runtime`
 - Branch: `develop`
-- HEAD de início: `c71343e30096aeb2354aade17c72d7aced3ce3b5`
+- HEAD de início da sessão R2: `b431ca1e300ca74391ad5c0ce7d1d295387901ff`
 - Alteração preexistente preservada: `AGENTS.md` não rastreado.
 - O provisionador atual mantém boa cobertura para downloads retomáveis, SHA-256,
   locks, ownership, idempotência e desinstalação segura.
@@ -199,6 +199,46 @@ alterado.
 - formato de `InstallPlan`, estado persistente, downloads `.partial`, hashes,
   ownership e progressos;
 - workflows, modelos, parâmetros e lógica funcional do MiniMax H3.
+
+## R2 — resiliência e compatibilidade
+
+### R2.1 — caracterização de downloads resilientes
+
+Adicionados testes determinísticos em `tests/test_model_resilience.py` para:
+
+- timeout durante streaming, preservação do `.partial` e retomada por `Range`;
+- resposta com `Content-Length` inconsistente, mantendo tamanho/hash do corpo
+  como fonte de verdade antes da promoção;
+- falha transitória em `Path.replace`, com retry da promoção sem repetir a
+  requisição HTTP;
+- duas requisições concorrentes para o mesmo modelo, verificando lock,
+  materialização única e retorno idempotente do segundo consumidor.
+
+O conjunto direcionado de modelos, downloads, locks e cache passou de 51 para
+55 testes nesta sessão. A implementação existente já cobria os demais casos
+R2.1 (200/206/416, parcial incompleto/completo, mismatch de `Content-Range`,
+hash inválido, retries finitos, cancelamento e arquivo final válido/ inválido).
+
+Não foi reproduzido defeito de produção neste marco; portanto nenhuma lógica
+de download foi alterada. `Content-Length` não é tratado como prova de
+integridade: o contrato atual valida os bytes efetivamente gravados por tamanho
+esperado e SHA-256 quando declarados. Os testes executados são Windows; Linux
+continua não validado nesta sessão.
+
+Commit do marco: pendente nesta atualização do checkpoint.
+
+### Matriz de estados R2.1
+
+| Estado anterior | Evento | Resultado observado | Persistência | Recuperação |
+| --- | --- | --- | --- | --- |
+| ausente | resposta completa e hash válido | arquivo final promovido | cache/ownership após promoção | não baixa novamente |
+| `.partial` incompleto | 206 compatível | bytes anexados e validados | `.partial` permanece até promoção | retoma por `Range` |
+| `.partial` incompleto | timeout/truncamento | erro transitório e parcial preservado | sem sucesso prematuro | retry retoma do offset |
+| `.partial` | 200 ignorando Range ou 206 incompatível | parcial descartado antes de recomeçar | arquivo final intacto | download completo sem concatenação |
+| `.partial` completo | 416 com tamanho remoto igual | valida e promove sem novo corpo | cache/ownership após promoção | idempotente |
+| qualquer | hash/tamanho inválido | não promove; parcial inválido é removido | sem ownership | nova execução parte de estado seguro |
+| final válido | nova solicitação concorrente | segundo consumidor retorna reutilização | nenhum overwrite | lock thread/processo |
+| final válido | falha transitória na promoção | retry da promoção, sem HTTP extra | sucesso só após promoção | retry local |
 
 ## Limitações de ambiente
 
