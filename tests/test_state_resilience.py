@@ -36,12 +36,26 @@ class StateResilienceTests(unittest.TestCase):
                 {**empty_state(), "profiles": {"first": {"version": "1"}}},
                 {**empty_state(), "profiles": {"second": {"version": "2"}}},
             ]
-            replace_barrier = threading.Barrier(2)
             real_replace = Path.replace
+            first_replace_started = threading.Event()
+            release_first_replace = threading.Event()
+            active_replace = False
+            active_guard = threading.Lock()
 
             def synchronized_replace(source: Path, destination: Path):
-                replace_barrier.wait(5)
-                return real_replace(source, destination)
+                nonlocal active_replace
+                with active_guard:
+                    if active_replace:
+                        raise AssertionError("state replacements overlapped in one process")
+                    active_replace = True
+                    first_replace_started.set()
+                try:
+                    if not release_first_replace.wait(5):
+                        raise TimeoutError("synthetic test did not release state replacement")
+                    return real_replace(source, destination)
+                finally:
+                    with active_guard:
+                        active_replace = False
 
             errors: list[BaseException] = []
             with mock.patch.object(storage.Path, "replace", new=synchronized_replace):
@@ -49,8 +63,10 @@ class StateResilienceTests(unittest.TestCase):
                     threading.Thread(target=lambda store=store, state=state: self._save(store, state, errors))
                     for store, state in zip(stores, states)
                 ]
-                for thread in threads:
-                    thread.start()
+                threads[0].start()
+                self.assertTrue(first_replace_started.wait(5))
+                threads[1].start()
+                release_first_replace.set()
                 for thread in threads:
                     thread.join(5)
 

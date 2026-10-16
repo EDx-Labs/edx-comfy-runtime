@@ -268,10 +268,13 @@ Commit do marco: `089ce15 fix(runtime): stage new component copies atomically`.
 Os testes de caracterização reproduziram dois problemas no utilitário
 `installer/storage.py`: duas gravações simultâneas compartilhavam
 `<state>.json.tmp`, fazendo uma substituição falhar com `FileNotFoundError`; e
-uma falha em `replace` deixava esse temporário para trás. A correção usa um
-temporário exclusivo por gravação, fecha o arquivo antes da substituição
-atômica e remove o temporário em sucesso, falha de serialização ou falha de
-rename. O estado anterior permanece intacto quando a substituição falha.
+uma falha em `replace` deixava esse temporário para trás. Após a primeira
+correção, a regressão ampliada também reproduziu `PermissionError` em duas
+substituições concorrentes do mesmo destino no Windows. A correção final usa
+um temporário exclusivo por gravação, fecha o arquivo antes da substituição
+atômica, serializa gravações no processo e remove o temporário em sucesso,
+falha de serialização ou falha de rename. O estado anterior permanece intacto
+quando a substituição falha.
 
 O schema público, os defaults de estado ausente e os campos desconhecidos não
 foram alterados. O store continua sem migração automática: JSON já truncado ou
@@ -280,8 +283,9 @@ recuperação de um checkpoint corrompido sem cópia anterior permanece fora do
 contrato atual e será documentada nos testes de integração.
 
 Validação do marco: 5 testes de persistência (2 novos de falha/concorrência e
-3 regressões existentes), todos aprovados; nenhuma instalação ou alteração de
-ambiente real foi feita.
+3 regressões existentes), todos aprovados; a corrida concorrente passou ainda
+10 execuções consecutivas e na regressão ampliada de 170 testes. Nenhuma
+instalação ou alteração de ambiente real foi feita.
 
 Commit do marco: pendente nesta atualização do checkpoint.
 
