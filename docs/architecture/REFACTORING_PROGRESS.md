@@ -8,8 +8,9 @@
 - Alteração preexistente preservada: `AGENTS.md` não rastreado.
 - O provisionador atual mantém boa cobertura para downloads retomáveis, SHA-256,
   locks, ownership, idempotência e desinstalação segura.
-- As fronteiras de catálogo, plano, estado e workflows já estão isoladas; a
-  instalação de componentes agora também possui um adapter explícito.
+- As fronteiras de catálogo, plano, estado, workflows, componentes, runtime de
+  backend e modelos agora possuem adapters explícitos; o orquestrador conserva
+  a coordenação e o ownership persistido.
 
 ## Backlog priorizado
 
@@ -19,9 +20,9 @@
 2. **Plano de instalação** — concluído: separar o contrato de dados do
    `InstallPlan` e validar referências declarativas antes das consultas de
    filesystem, mantendo `Provisioner.plan()` como API compatível.
-3. **Execução e adapters** — em andamento: workflows e componentes concluídos;
-   runtime e modelos ainda precisam de uma fronteira segura, sem alterar seus
-   contratos.
+3. **Execução e adapters** — concluído para workflows, componentes, runtime de
+   backend e modelos; permanece a revisão de composição do orquestrador sem
+   alterar contratos.
 4. **Estado e validação** — adapter de persistência concluído; permanece a
    separação futura das regras de validação/ownership sem alterar o formato.
 5. **Caracterização contínua** — ampliar testes de falhas parciais, caminhos
@@ -33,16 +34,16 @@
 | --- | --- | --- | --- | --- | --- |
 | Componentes/custom nodes | `installer/component_adapter.py`; `Provisioner._component()` coordena o registro | catálogo de components, fonte local, funções de fingerprint/link/cópia, runner de pip e callbacks de cancelamento/progresso | cria ou atualiza `custom_nodes/<name>`, marcador `.edx-component.json`, executa pip quando declarado; preserva node externo | somente o orquestrador grava `state.components` | adapter + `test_component_install.py` + `test_local_component_idempotence.py`; 17 testes diretos |
 | Runtime base ComfyUI | `installer/runtime.py:BaseRuntimeInstaller`, consumido por `remote_bootstrap.py` | `runtime.json`, runner injetável, git, venv/pip, marcador `.edx-runtime.json` | clone/fetch/checkout, criação de venv, instalação de backend e requirements | marcador do runtime; não usa `ProvisioningStateStore` | `test_managed_runtime.py`, cobertura sintética com runner falso |
-| Runtime de backend de componente | `Provisioner._backend_runtime()` e `_runtime_downloader()`; installers específicos carregados por caminho | manifesto do component, `install_runtime.py`, hardware/plataforma, `_download()` e state store | downloads de runtime em cache, staging/extração controlada pelo installer e marcador/configuração do backend | `state.components[ident].backend_runtime` é salvo após validação | `test_llama_runtime_provisioning.py`, `test_managed_runtime.py` |
-| Modelos | `Provisioner._model_path()`, `_valid_model()`, `_download()` e `_finalize_partial()` | manifestos de models, opener HTTP injetado, locks, cache SHA-256, state store | cria `.partial`, retoma ou reinicia downloads, promove arquivo validado, atualiza cache/ownership | cache de validação e `state.models`; ownership é decidido pelo orquestrador | `test_install_robustness.py`, `test_download_416.py`, `test_model_validation_cache.py`, integridade MiniMax/Music/Krea |
+| Runtime de backend de componente | `installer/runtime_adapter.py:BackendRuntimeAdapter`; fachadas antigas do `Provisioner` apenas injetam dependências e aplicam o resultado | manifesto do component, `install_runtime.py`, hardware/plataforma, downloader e callbacks de progresso/cancelamento | downloads de runtime em cache, staging/extração controlada pelo installer e marcador/configuração do backend | `state.components[ident].backend_runtime` é salvo pelo orquestrador após validação | adapter + `test_llama_runtime_provisioning.py` + `test_managed_runtime.py`; 36 testes direcionados |
+| Modelos | `installer/model_adapter.py:ModelAdapter`; fachadas `_valid_model()`/`_download()` preservam consumidores legados | manifestos de models, opener HTTP injetado, locks injetados, hash, cache de validação e callback de ownership | cria `.partial`, retoma ou reinicia downloads, promove arquivo validado e atualiza cache; não conhece o schema de estado | cache de validação é do adapter; `state.models`/ownership continuam no callback do `Provisioner` | adapter + `test_install_robustness.py`, `test_download_416.py`, `test_model_validation_cache.py`, integridade MiniMax/Music/Krea; 68 testes direcionados |
 | Workflows | `installer/workflow_adapter.py:WorkflowInstaller`; `_workflows()` apenas delega | catálogo de workflow sets, fonte local, digest | copia JSON ao destino ComfyUI, preserva edição do usuário, registra hash | `state.workflows` | `test_workflow_adapter.py` e regressões de perfis |
 
-Leitura arquitetural: o adapter de componentes possui uma fronteira segura
-porque suas entradas e efeitos são locais e o estado pode continuar sendo
-propriedade do orquestrador. O runtime de backend ainda mistura seleção de
-hardware, download adaptado e persistência, enquanto o gerenciamento de
-modelos concentra integridade, locks, retry e ownership em `Provisioner`; são
-as próximas áreas que exigem caracterização antes de uma extração.
+Leitura arquitetural: os três adapters de execução recebem operações externas
+por injeção, não importam o orquestrador e devolvem resultados para a
+coordenação. O `ProvisioningStateStore` continua com proprietário claro:
+componentes, runtime e workflows são registrados pelo provisionador, enquanto
+o adapter de modelos recebe apenas o callback que materializa ownership no
+momento de promoção do arquivo validado.
 
 ## Marco executado
 
@@ -134,6 +135,47 @@ Validações executadas:
 Nenhum manifesto, workflow, modelo, URL, hash ou parâmetro MiniMax H3 foi
 alterado.
 
+### Marco 6 — adapter de runtime de backend
+
+Implementado: `BackendRuntimeAdapter` isolou a resolução do installer por
+componente, detecção de plataforma/hardware, seleção de candidatos, adaptação
+do downloader comum, tratamento de cancelamento/falha e verificação final.
+`Provisioner` continua expondo as fachadas existentes e grava o registro
+`backend_runtime` somente depois de o adapter confirmar readiness.
+
+Commit: `b1f33ae refactor(runtime): isolate backend runtime adapter`.
+
+Validações executadas:
+
+- baseline antes da extração: 35 testes de runtime base e runtimes de backend;
+- adapter novo + regressão: 36 testes;
+- nenhuma instalação real, download real ou execução de `llama-server`.
+
+### Marco 7 — adapter de modelos
+
+Implementado: `ModelAdapter` isolou resolução de destino, cache de validação,
+single-flight de SHA-256, promoção de `.partial`, retomada, retry, tratamento
+HTTP 416 e emissão de progresso. Locks do filesystem, opener, hash e ownership
+são dependências explícitas; o callback de ownership mantém o
+`ProvisioningStateStore` sob o `Provisioner`.
+
+Commit: `527e5b1 refactor(runtime): isolate model validation and downloads`.
+
+Validações executadas:
+
+- adapter novo + validação, retry, HTTP 416, locks, integridade MiniMax e Music:
+  68 testes;
+- regressão ampliada sequencial de componentes, runtime, modelos, estado,
+  workflows, desinstalação, MiniMax e Krea: 213 testes, 1 skip;
+- compilação, imports e `git diff --check`.
+
+Uma tentativa de executar dois processos de teste em paralelo exibiu uma
+exceção de remoção concorrente de lock temporário no Windows; os mesmos
+conjuntos passaram isoladamente e na regressão sequencial, sem falha funcional.
+
+Nenhum manifesto, workflow, modelo, URL, hash ou parâmetro MiniMax H3 foi
+alterado.
+
 ## Contratos preservados
 
 - comandos e argumentos de `install_workflow.py`;
@@ -152,8 +194,8 @@ alterado.
 
 ## Próxima tarefa segura
 
-Caracterizar primeiro `Provisioner._backend_runtime()` e `BaseRuntimeInstaller`
-para decidir se o runtime de backend pode ser extraído como adapter sem
-duplicar o downloader, o state store ou os contratos de progresso. Se a
-fronteira não for segura, registrar a decisão e avançar para a validação
-isolada de modelos.
+Revisar a composição final de `Provisioner.install()` e `plan()` para reduzir
+conhecimento residual sobre detalhes de execução, sem criar um novo serviço
+genérico. Em seguida, caracterizar os contratos CLI `--list`/`--dry-run` e
+executar a bateria histórica de 88 testes mais a regressão ampliada, mantendo
+MiniMax H3 e os contratos compartilhados intactos.
