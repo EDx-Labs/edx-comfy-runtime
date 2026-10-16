@@ -287,6 +287,26 @@ Validação do marco: 5 testes de persistência (2 novos de falha/concorrência 
 10 execuções consecutivas e na regressão ampliada de 170 testes. Nenhuma
 instalação ou alteração de ambiente real foi feita.
 
+Commit do marco: `dad3a34 fix(runtime): serialize concurrent state writes`.
+
+### R2.4 — caminhos e diferenças de plataforma
+
+Adicionados testes em `tests/test_platform_paths.py` para destinos absolutos
+com espaços e Unicode, semântica de caminho relativo, persistência de estado
+em nomes Unicode e comportamento de symlink explicitamente marcado por
+plataforma. O host desta sessão é Windows; os testes POSIX/Linux permanecem
+skip e não são tratados como suporte validado.
+
+O teste de permissão reproduziu que `ModelAdapter.download()` deixava um
+`PermissionError` escapar durante a criação inicial do diretório. A correção
+normaliza essa falha para o `error_type` do adapter, sem criar `.partial` nem
+arquivo final. As falhas de promoção posteriores já eram traduzidas e cobertas
+por R2.1.
+
+Validação do marco: 40 testes direcionados de paths, modelos e downloads,
+aprovados, com 2 skips de symlink por plataforma/privilégio; compilação e
+`git diff --check` aprovados. Linux não foi executado nesta máquina.
+
 Commit do marco: pendente nesta atualização do checkpoint.
 
 ## Limitações de ambiente

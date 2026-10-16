@@ -250,7 +250,14 @@ class ModelAdapter:
             self.check_cancelled(cancel_event, f"download cancelado antes de {ident}")
             if self.valid_model(target, model):
                 return False
-            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+            except (self.error_type, self.cancelled_type):
+                raise
+            except OSError as exc:
+                raise self.error_type(
+                    f"não foi possível preparar o destino do modelo {ident}: {exc}"
+                ) from exc
             partial = target.with_suffix(target.suffix + ".partial")
             expected = int(model.get("size_bytes", 0)) or None
             reset_used = False
