@@ -122,6 +122,19 @@ class ManifestCatalog:
             workflow_sets=tuple(workflow_sets),
         )
 
+    def resolve_installation(self, profile_id: str) -> ProfileResolution:
+        """Resolve e valida referências declarativas antes de consultar o host."""
+        resolution = self.resolve(profile_id)
+        for label, identifiers, registry in (
+            ("component", resolution.components, self.components),
+            ("model", resolution.models, self.models),
+            ("workflow_set", resolution.workflow_sets, self.workflow_sets),
+        ):
+            for ident in identifiers:
+                if ident not in registry:
+                    raise ProvisioningError(f"{label} inexistente: {ident}")
+        return resolution
+
     def profile_requirements(self, profile_id: str) -> dict[str, Any]:
         """Calcula requisitos declarados sem consultar o host atual."""
         resolution = self.resolve(profile_id)

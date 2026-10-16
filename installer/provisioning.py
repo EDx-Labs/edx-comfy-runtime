@@ -15,12 +15,13 @@ import http.client
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 from .catalog import ManifestCatalog
 from .errors import ProvisioningError
+from .plans import InstallPlan
 
 ROOT = Path(__file__).resolve().parents[1]
 CHUNK = 8 * 1024 * 1024
@@ -177,22 +178,6 @@ def same_physical_tree(source: Path, target: Path) -> bool:
         if os.path.samefile(source, target): return True
         return all((target / item.relative_to(source)).is_file() and os.path.samefile(item, target / item.relative_to(source)) for item in _local_files(source))
     except OSError: return False
-
-@dataclass
-class InstallPlan:
-    profile_id: str; profiles: list[str]; components: list[str]; models: list[str]; workflow_sets: list[str]; comfy: Path
-    already_installed: list[str] = field(default_factory=list)
-    to_install: list[str] = field(default_factory=list)
-    models_to_download: list[str] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
-    estimated_bytes: int = 0
-    download_size_complete: bool = True
-    reused_assets: list[str] = field(default_factory=list)
-    pending_assets: list[str] = field(default_factory=list)
-    def format(self) -> str:
-        def part(name: str, values: list[str]) -> str: return name + "\n" + ("\n".join("  - " + x for x in values) if values else "  - nenhum")
-        size = f"{self.estimated_bytes / 2**30:.2f} GiB" if self.estimated_bytes else "desconhecido"
-        return "\n".join((part("PROFILE", [self.profile_id]), part("DEPENDENCIES", self.profiles[1:]), part("ALREADY INSTALLED", self.already_installed), part("TO INSTALL", self.to_install), part("MODELS TO DOWNLOAD", self.models_to_download), f"ESTIMATED DOWNLOAD/DISK\n  - {size}", part("WARNINGS", self.warnings)))
 
 class Provisioner:
     def __init__(
@@ -379,14 +364,11 @@ class Provisioner:
             return True
     def plan(self, profile_id: str, comfy: Path) -> InstallPlan:
         if not (comfy / "models").is_dir(): raise ProvisioningError(f"não parece ComfyUI (models ausente): {comfy}")
-        resolution = self.catalog.resolve(profile_id)
+        resolution = self.catalog.resolve_installation(profile_id)
         profiles = list(resolution.profiles)
         components = list(resolution.components)
         models = list(resolution.models)
         sets = list(resolution.workflow_sets)
-        for label, ids, registry in (("component", components, self.components), ("model", models, self.models), ("workflow_set", sets, self.workflow_sets)):
-            for ident in ids:
-                if ident not in registry: raise ProvisioningError(f"{label} inexistente: {ident}")
         result = InstallPlan(profile_id, profiles, components, models, sets, comfy)
         for ident in components:
             component = self.components[ident]; source = ROOT / component["source"]; target = comfy / "custom_nodes" / component["name"]; marker = target / ".edx-component.json"

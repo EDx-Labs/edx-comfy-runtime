@@ -76,6 +76,15 @@ class ManifestCatalogTests(unittest.TestCase):
         with self.assertRaisesRegex(ProvisioningError, "ciclo"):
             catalog.resolve("cycle-a")
 
+    def test_installation_resolution_rejects_missing_resource_references(self) -> None:
+        self._write("profiles/broken.json", {"profiles": {
+            "broken": {"models": ["missing-model"]},
+        }})
+        catalog = ManifestCatalog(self.root, source_root=self.source)
+
+        with self.assertRaisesRegex(ProvisioningError, "model inexistente: missing-model"):
+            catalog.resolve_installation("broken")
+
 
 if __name__ == "__main__":
     unittest.main()
