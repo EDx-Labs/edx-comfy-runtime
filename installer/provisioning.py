@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .catalog import ManifestCatalog
+from .component_adapter import ComponentAdapter
 from .errors import ProvisioningError
 from .plans import InstallPlan
 from .provisioning_state import ProvisioningStateStore
@@ -468,33 +469,34 @@ class Provisioner:
                     message += "\nstdout (tail): " + Provisioner._tail(stdout, 1500)
                 raise ProvisioningError(message)
     def _component(self, ident: str, comfy: Path, install_deps: bool, state: dict[str, Any], progress: Progress | None = None, cancel_event=None) -> None:
-        self._check_cancelled(cancel_event)
-        item = self.components[ident]; source = ROOT / item["source"]; target = comfy / "custom_nodes" / item["name"]; marker = target / ".edx-component.json"; version = fingerprint(source)
-        dev_link = target.exists() and os.path.samefile(source, target)  # junction/symlink de desenvolvimento: o destino É a fonte
-        if target.exists() and not marker.exists() and not dev_link: print(f"[EDx] preservando custom node externo: {target.name}"); return
-        if dev_link: print(f"[EDx] component local ligado à fonte (dev) -> {target}")
-        elif read_json(marker).get("fingerprint") != version and same_physical_tree(source, target):
-            # fonte mudou desde o marcador, mas o destino já são os mesmos arquivos (hardlinks): só atualiza o marcador
-            write_json(marker, {"component": ident, "version": item.get("version", "0"), "fingerprint": version, "installed_at": time.time()})
-        elif read_json(marker).get("fingerprint") != version:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(source, target, dirs_exist_ok=True, copy_function=link_or_copy,
-                            ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
-            write_json(marker, {"component": ident, "version": item.get("version", "0"), "fingerprint": version, "installed_at": time.time()}); print(f"[EDx] component local -> {target}")
-        old = state.setdefault("components", {}).get(ident, {})
-        if install_deps and old.get("fingerprint") != version:
-            requirements = target / "requirements.txt"
-            # "install": "requirements" -> só requirements.txt (sem pip install -e); omitido mantém o comportamento legado.
-            method = item.get("install", "auto")
-            pip = [self.python_executable, "-m", "pip", "install"]
-            if method == "requirements": command = pip + ["-r", str(requirements)] if requirements.is_file() else None
-            elif method == "editable": command = pip + ["-e", str(target)] if (target / "pyproject.toml").is_file() else None
-            else: command = pip + ["-r", str(requirements)] if requirements.is_file() else pip + ["-e", str(target)] if (target / "pyproject.toml").is_file() else None
-            self._emit(progress, "INSTALLING_COMPONENT", component=ident)
-            if command: self._run_cancellable(command, cancel_event, item.get("name", ident))
-        self._check_cancelled(cancel_event)
-        state["components"][ident] = {"version": item.get("version", "0"), "fingerprint": version, "updated_at": time.time(),
-                                      **({"backend_runtime": old["backend_runtime"]} if old.get("backend_runtime") else {})}
+        old = state.get("components", {}).get(ident, {})
+        result = ComponentAdapter(
+            ROOT,
+            self.components,
+            python_executable=self.python_executable,
+            run_command=self._run_cancellable,
+            fingerprint=fingerprint,
+            link_or_copy=link_or_copy,
+            same_physical_tree=same_physical_tree,
+            check_cancelled=self._check_cancelled,
+            emit=self._emit,
+        ).install(
+            ident,
+            comfy,
+            install_deps=install_deps,
+            previous_fingerprint=old.get("fingerprint"),
+            progress=progress,
+            cancel_event=cancel_event,
+        )
+        if not result.managed:
+            return
+        state["components"] = components = state.setdefault("components", {})
+        components[ident] = {
+            "version": self.components[ident].get("version", "0"),
+            "fingerprint": result.fingerprint,
+            "updated_at": time.time(),
+            **({"backend_runtime": old["backend_runtime"]} if old.get("backend_runtime") else {}),
+        }
     @staticmethod
     def _reclaim_orphan_lock(lock_path: Path, dead_pid: int) -> None:
         """Remove um lock órfão sem corrida. Nunca toca no .partial (ciclos de vida distintos).
