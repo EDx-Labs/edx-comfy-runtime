@@ -24,6 +24,7 @@ from .component_adapter import ComponentAdapter
 from .errors import ProvisioningError
 from .plans import InstallPlan
 from .provisioning_state import ProvisioningStateStore
+from .runtime_adapter import BackendRuntimeAdapter
 from .storage import read_json, write_json
 from .workflow_adapter import WorkflowInstaller
 
@@ -691,54 +692,36 @@ class Provisioner:
         match = re.match(r"bytes (\d+)-\d*/(\d+|\*)", content_range)
         if not match or int(match.group(1)) != offset: return False
         return not (expected and match.group(2) != "*" and int(match.group(2)) != expected)  # objeto remoto de outro tamanho: incompatível
-    def _runtime_target(self, ident: str, comfy: Path) -> Path: return comfy / "custom_nodes" / self.components[ident]["name"]
+    def _runtime_adapter(self) -> BackendRuntimeAdapter:
+        return BackendRuntimeAdapter(
+            ROOT,
+            self.components,
+            load_installer=load_runtime_installer,
+            download_asset=self._download,
+            emit=self._emit,
+            check_cancelled=self._check_cancelled,
+            cancelled_errors=(ProvisioningCancelled,),
+            error_type=ProvisioningError,
+        )
+    def _runtime_target(self, ident: str, comfy: Path) -> Path:
+        return self._runtime_adapter().target(ident, comfy)
     def _runtime_module(self, ident: str):
-        item = self.components[ident]; return load_runtime_installer(ROOT / item["source"] / item["backend_runtime"]["installer"])
+        return self._runtime_adapter().module(ident)
     def backend_runtime_status(self, ident: str, comfy: Path) -> dict[str, Any]:
-        """Readiness estrutural do executável gerenciado por um component (ex.: llama.cpp). Não executa processos."""
-        try: status = dict(self._runtime_module(ident).runtime_status(self._runtime_target(ident, comfy)))
-        except Exception as exc: status = {"ready": False, "reason": "RUNTIME_INSTALLER_UNAVAILABLE", "detail": str(exc)}
-        status["id"] = self.components[ident]["backend_runtime"].get("id", ident); status["component"] = ident
-        return status
+        return self._runtime_adapter().status(ident, comfy)
     def _runtime_downloader(self, ident: str, progress: Progress | None, cancel_event):
-        """Adapta _download (resume, retry, lock, SHA-256, partial seguro) ao contrato Asset -> arquivo do install_runtime."""
-        def fetch(asset, cache_dir: Path, offline: bool) -> Path:
-            target = Path(cache_dir) / asset.name
-            if offline and not target.is_file(): raise ProvisioningError(f"cache offline sem {asset.name}")
-            def relay(event: dict[str, Any]) -> None:
-                if progress: progress({**event, "kind": "runtime", "component": ident})
-            self._download(f"runtime:{ident}:{asset.name}", target, {"url": asset.url, "sha256": asset.sha256}, progress=relay, cancel_event=cancel_event)
-            return target
-        return fetch
+        return self._runtime_adapter().downloader(ident, progress, cancel_event)
     def _backend_runtime(self, ident: str, comfy: Path, state: dict[str, Any], progress: Progress | None = None, cancel_event=None) -> None:
-        item = self.components[ident]
-        if not item.get("backend_runtime"): return
-        self._check_cancelled(cancel_event)
-        target = self._runtime_target(ident, comfy)
-        try: dev_link = target.exists() and os.path.samefile(ROOT / item["source"], target)
-        except OSError: dev_link = False
-        if not target.exists(): raise ProvisioningError(f"custom node ausente; runtime não pode ser instalado [RUNTIME_NODE_MISSING]: {target.name}")
-        if not (target / ".edx-component.json").is_file() and not dev_link:
-            print(f"[EDx] node externo {target.name}: runtime não é instalado pelo Runtime (execute install_runtime.py)"); return
-        if self.backend_runtime_status(ident, comfy)["ready"]:
-            self._emit(progress, "RUNTIME_CACHED", component=ident); return
-        module = self._runtime_module(ident)
-        self._emit(progress, "INSTALLING_COMPONENT", component=item["backend_runtime"].get("id", ident))
-        try:
-            platform_name = module.normalize_platform(); hardware = module.detect_hardware(platform_name)
-            candidates = module.select_backend_candidates(platform_name, hardware, requested_backend="auto", allow_fallback=True, build_from_source=False)
-            context = module.InstallerContext(root=target, platform_name=platform_name, architecture=hardware.architecture, release_tag=module.RELEASE_TAG,
-                                              release_commit=module.RELEASE_COMMIT, executable_name="llama-server.exe" if platform_name == "windows" else "llama-server")
-            package = module.provision_runtime(context, hardware, candidates, cache_dir=context.runtime_root / ".downloads" / module.RELEASE_TAG,
-                                               source_dir=context.runtime_root / ".sources" / f"llama.cpp-{module.RELEASE_TAG}", force=True,
-                                               downloader=self._runtime_downloader(ident, progress, cancel_event), reraise=(ProvisioningCancelled,))
-        except ProvisioningCancelled: raise
-        except Exception as exc: raise ProvisioningError(f"runtime llama.cpp não pôde ser instalado [RUNTIME_INSTALL_FAILED]: {exc}") from exc
-        status = self.backend_runtime_status(ident, comfy)
-        if not status["ready"]: raise ProvisioningError(f"runtime llama.cpp instalado mas inválido [RUNTIME_INSTALL_INVALID]: {status.get('reason')}")
+        result = self._runtime_adapter().install(
+            ident,
+            comfy,
+            progress=progress,
+            cancel_event=cancel_event,
+        )
+        if result.backend_record is None:
+            return
         record = state.setdefault("components", {}).setdefault(ident, {})
-        record["backend_runtime"] = {"id": item["backend_runtime"].get("id", ident), "tag": module.RELEASE_TAG, "backend": package.backend,
-                                     "path": str(context.runtime_root), "owned": True, "installed_at": time.time()}
+        record["backend_runtime"] = result.backend_record
         self._state_store(comfy).save(state)  # ownership gravado já: sobrevive a crash antes do commit do profile
     def _workflows(self, ident: str, comfy: Path, state: dict[str, Any]) -> None:
         WorkflowInstaller(source_root=ROOT, workflow_sets=self.workflow_sets, digest=sha256).install(ident, comfy, state)
