@@ -261,6 +261,28 @@ componentes existentes, idempotência, cópia incompleta, falha de dependências
 preservação externa e regressões de seleção de pip passaram. Nenhum `pip` real
 foi executado.
 
+Commit do marco: `089ce15 fix(runtime): stage new component copies atomically`.
+
+### R2.3 — integridade da persistência do estado
+
+Os testes de caracterização reproduziram dois problemas no utilitário
+`installer/storage.py`: duas gravações simultâneas compartilhavam
+`<state>.json.tmp`, fazendo uma substituição falhar com `FileNotFoundError`; e
+uma falha em `replace` deixava esse temporário para trás. A correção usa um
+temporário exclusivo por gravação, fecha o arquivo antes da substituição
+atômica e remove o temporário em sucesso, falha de serialização ou falha de
+rename. O estado anterior permanece intacto quando a substituição falha.
+
+O schema público, os defaults de estado ausente e os campos desconhecidos não
+foram alterados. O store continua sem migração automática: JSON já truncado ou
+inválido é lido pelo fallback existente, sem declarar sucesso de instalação;
+recuperação de um checkpoint corrompido sem cópia anterior permanece fora do
+contrato atual e será documentada nos testes de integração.
+
+Validação do marco: 5 testes de persistência (2 novos de falha/concorrência e
+3 regressões existentes), todos aprovados; nenhuma instalação ou alteração de
+ambiente real foi feita.
+
 Commit do marco: pendente nesta atualização do checkpoint.
 
 ## Limitações de ambiente
