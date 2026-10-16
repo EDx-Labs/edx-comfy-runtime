@@ -329,7 +329,27 @@ o ambiente a bloqueou imediatamente por PEP 668, sem instalar dependência ou
 alterar o repositório/ambiente ativo. O teste foi corrigido para manter o
 runner falso em todas as execuções; a suíte final não inicia subprocessos.
 
-Commit do marco: pendente nesta atualização do checkpoint.
+Commit do marco: `91d010d test(runtime): cover simulated provisioning recovery`.
+
+### Fechamento da sessão R2
+
+- bateria histórica: 88 testes aprovados;
+- regressão direcionada final: 180 testes aprovados, 3 skips explícitos de
+  symlink (um teste de componente sem privilégio e dois testes marcados para a
+  plataforma correspondente);
+- `--list` e `--dry-run minimax-h3-fast` aprovados em diretório temporário;
+- `compileall -q installer tests`, imports e `git diff --check` aprovados;
+- nenhum manifesto, URL, hash, modelo ou workflow de produção foi modificado;
+- MiniMax H3 permaneceu coberto pelos testes de byte-identidade, integridade,
+  resolução e instalação simulada existentes;
+- nenhum download real, instalação de dependência ou inicialização de ComfyUI
+  foi concluído. A tentativa única de `pip` descrita em R2.5 foi bloqueada
+  pelo ambiente antes de qualquer alteração.
+
+O runtime agora rejeita cópias novas parciais no destino final, preserva
+temporários retomáveis, materializa modelos uma única vez sob concorrência,
+grava estado com temporários isolados/limpos e serialização process-local, e
+normaliza falhas de preparação de paths sem alterar APIs ou manifestos.
 
 ## Limitações de ambiente
 
@@ -339,7 +359,9 @@ Commit do marco: pendente nesta atualização do checkpoint.
 
 ## Próxima tarefa segura
 
-Próxima evolução segura: ampliar caracterização de falhas parciais e caminhos
-Windows/Linux, sem criar novos adapters até surgir uma responsabilidade
-concreta fora das fronteiras atuais. Manter a revisão dos contratos
-compartilhados e a regressão de MiniMax H3 antes de qualquer mudança futura.
+Próxima tarefa segura: executar a mesma matriz de paths, symlinks, locks e
+estado em Linux/WSL ou CI POSIX disponível, sem declarar suporte Linux a partir
+dos resultados Windows. Depois, revisar cenários de gravação concorrente entre
+processos; não criar novos adapters enquanto não surgir uma responsabilidade
+concreta. Manter a regressão de MiniMax H3 e os contratos compartilhados antes
+de qualquer mudança futura.
