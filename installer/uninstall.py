@@ -136,7 +136,7 @@ class Uninstaller:
 
     def _installed_others(self, comfy: Path, excluded: set[str]) -> list[str]:
         """Profiles realmente instalados (filesystem + estado) e explicitamente desejados, fora do alvo."""
-        state = read_json(self.p._state_path(comfy), {}).get("profiles", {})
+        state = self.p._state_store(comfy).load({}).get("profiles", {})
         result = []
         for profile_id, record in state.items():
             if profile_id in excluded or profile_id not in self.p.profiles: continue
@@ -161,7 +161,7 @@ class Uninstaller:
             other_closure = self._closure([other])
             depends_on_target = bool({profile, *members} & set(other_closure))
             for path in self._paths(comfy, other_closure): needed.setdefault(path, (other, depends_on_target))
-        state = read_json(self.p._state_path(comfy), {})
+        state = self.p._state_store(comfy).load({})
         for ident in self._resources(closure, "models"): self._plan_model(plan, comfy, ident, needed, state)
         for ident in self._resources(closure, "components"): self._plan_component(plan, comfy, ident, needed, state)
         for ident in self._resources(closure, "workflow_sets"): self._plan_workflows(plan, comfy, ident, needed, state)
@@ -366,7 +366,7 @@ class Uninstaller:
         return freed
 
     def _update_state(self, comfy: Path, plan: UninstallPlan, removed: list[UninstallItem]) -> None:
-        state_path = self.p._state_path(comfy); state = read_json(state_path, {})
+        store = self.p._state_store(comfy); state = store.load({})
         if not state: return
         for item in removed:
             if item.kind == "model": state.get("models", {}).pop(item.ident, None); self.p._forget_model(Path(item.path))
@@ -379,4 +379,4 @@ class Uninstaller:
         for profile_id in (profile, *members):  # deixa de ser desejado explicitamente; a validade continua vindo do filesystem
             if profile_id in state.get("profiles", {}): state["profiles"][profile_id]["explicit"] = False
         state["last_uninstall"] = {"target": plan.target, "at": time.time(), "removed": [item.path for item in removed]}
-        write_json(state_path, state)
+        store.save(state)

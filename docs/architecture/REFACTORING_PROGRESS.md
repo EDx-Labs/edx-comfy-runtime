@@ -21,8 +21,8 @@
    filesystem, mantendo `Provisioner.plan()` como API compatível.
 3. **Execução e adapters** — delimitar instalação de componentes, runtime,
    modelos e workflows em adapters pequenos, sem alterar seus contratos.
-4. **Estado e validação** — centralizar transições persistentes e revalidação
-   de ownership/integridade, preservando o formato de estado existente.
+4. **Estado e validação** — em andamento: centralizar o adapter de persistência
+   atômica sem alterar transições, ownership ou formato do estado existente.
 5. **Caracterização contínua** — ampliar testes de falhas parciais, caminhos
    Windows/Linux, reexecução e compatibilidade de CLI.
 
@@ -54,13 +54,29 @@ models e workflow sets antes de o `Provisioner` observar ou alterar qualquer
 instalação. A classe `Provisioner` continua reexportando `InstallPlan` por
 compatibilidade do import existente.
 
-Commit: `cdd2526 refactor(runtime): isolate installation plan contract`.
+Commit: `14eeb29 refactor(runtime): isolate installation plan contract`.
 
 Validações executadas:
 
 - 50 testes de provisionamento, retry, idempotência e MiniMax Music 3;
 - import de compatibilidade `installer.provisioning.InstallPlan`;
 - compilação dos módulos alterados.
+
+### Marco 3 — adapter de estado persistente
+
+Implementado: `ProvisioningStateStore` centraliza o caminho, defaults e escrita
+atômica do estado do provisionador. O store é neutro quanto a ownership e
+mantém registros desconhecidos, enquanto `Provisioner` e `Uninstaller` retêm
+as mesmas regras de validação e o mesmo schema JSON. A fachada também mantém
+sincronizadas reatribuições dos registries legados usadas por adapters e testes.
+
+Commit: `4e6fb7e refactor(runtime): centralize provisioning state storage`.
+
+Validações executadas:
+
+- 88 testes de estado, provisionamento, desinstalação, integridade e retry;
+- compilação/import dos módulos alterados;
+- regressão de reatribuição dos registries legados, corrigida antes do commit.
 
 ## Contratos preservados
 

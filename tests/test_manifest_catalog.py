@@ -85,6 +85,14 @@ class ManifestCatalogTests(unittest.TestCase):
         with self.assertRaisesRegex(ProvisioningError, "model inexistente: missing-model"):
             catalog.resolve_installation("broken")
 
+    def test_provisioner_legacy_registry_reassignment_stays_in_sync(self) -> None:
+        from installer.provisioning import Provisioner
+
+        provisioner = Provisioner()
+        provisioner.profiles = {"replacement": {}}
+
+        self.assertEqual(provisioner._resolved_profiles("replacement"), ["replacement"])
+
 
 if __name__ == "__main__":
     unittest.main()

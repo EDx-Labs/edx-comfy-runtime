@@ -22,6 +22,8 @@ from typing import Any, Callable
 from .catalog import ManifestCatalog
 from .errors import ProvisioningError
 from .plans import InstallPlan
+from .provisioning_state import ProvisioningStateStore
+from .storage import read_json, write_json
 
 ROOT = Path(__file__).resolve().parents[1]
 CHUNK = 8 * 1024 * 1024
@@ -56,16 +58,6 @@ class ProvisioningCancelled(ProvisioningError):
 
 class _TruncatedDownload(OSError):
     """Resposta terminou antes de size_bytes; transitória, partial é mantido."""
-
-def read_json(path: Path, default: dict[str, Any] | None = None) -> dict[str, Any]:
-    try: return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError): return default or {}
-
-def write_json(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-    temporary.replace(path)
 
 _VALIDATION_WRITE_LOCK = threading.Lock()
 _HASH_LOCKS: dict[str, threading.Lock] = {}
@@ -199,6 +191,28 @@ class Provisioner:
         self.profiles = self.catalog.profiles
         self.capabilities = self.catalog.capabilities
         self.install_groups = self.catalog.install_groups
+
+    def _catalog_registry_property(name: str):
+        private = "_" + name
+
+        def getter(self):
+            return getattr(self, private)
+
+        def setter(self, value):
+            setattr(self, private, value)
+            if hasattr(self, "catalog"):
+                setattr(self.catalog, name, value)
+
+        return property(getter, setter)
+
+    components = _catalog_registry_property("components")
+    models = _catalog_registry_property("models")
+    workflow_sets = _catalog_registry_property("workflow_sets")
+    profiles = _catalog_registry_property("profiles")
+    capabilities = _catalog_registry_property("capabilities")
+    install_groups = _catalog_registry_property("install_groups")
+
+    del _catalog_registry_property
     def _load(self, kind: str, registry: bool = False) -> dict[str, dict[str, Any]]:
         return self.catalog._load(kind, registry)
     def list_profiles(self) -> dict[str, dict[str, Any]]: return self.catalog.list_profiles()
@@ -213,7 +227,7 @@ class Provisioner:
         comfy = Path(comfy)
         if not (comfy / "models").is_dir():
             return {"installed": False, "profile_id": profile_id, "missing": ["base_runtime"]}
-        state = read_json(self._state_path(comfy), {})
+        state = self._state_store(comfy).load({})
         plan = self.plan(profile_id, comfy)
         has_profile_state = profile_id in state.get("profiles", {})
         missing = ([] if has_profile_state else ["profile_state"])
@@ -311,6 +325,8 @@ class Provisioner:
         from .uninstall import Uninstaller
         return Uninstaller(self).execute(target, comfy, plan)
     def _state_path(self, comfy: Path) -> Path: return comfy / "user" / "default" / "EDx" / "provisioning-state.json"
+    def _state_store(self, comfy: Path) -> ProvisioningStateStore:
+        return ProvisioningStateStore(self._state_path(comfy))
     def _model_path(self, comfy: Path, model: dict[str, Any]) -> Path: return comfy / "models" / model["directory"] / model["filename"]
     @staticmethod
     def _validation_cache_path(path: Path) -> Path | None:
@@ -340,10 +356,10 @@ class Provisioner:
         if cache is None or not path.is_file(): return
         state_path = cache.with_name("provisioning-state.json")
         with _VALIDATION_WRITE_LOCK:
-            state = read_json(state_path, {"schema_version": 1, "profiles": {}, "components": {}, "models": {}, "workflows": {}})
+            state = ProvisioningStateStore(state_path).load()
             record = state.setdefault("models", {}).setdefault(ident, {})
             record.update({"path": str(path), "owned": True, "owned_stamp": self._file_stamp(path)})
-            write_json(state_path, state)
+            ProvisioningStateStore(state_path).save(state)
     def _forget_model(self, path: Path) -> None:
         cache = self._validation_cache_path(path)
         if cache is None: return
@@ -720,7 +736,7 @@ class Provisioner:
         record = state.setdefault("components", {}).setdefault(ident, {})
         record["backend_runtime"] = {"id": item["backend_runtime"].get("id", ident), "tag": module.RELEASE_TAG, "backend": package.backend,
                                      "path": str(context.runtime_root), "owned": True, "installed_at": time.time()}
-        write_json(self._state_path(comfy), state)  # ownership gravado já: sobrevive a crash antes do commit do profile
+        self._state_store(comfy).save(state)  # ownership gravado já: sobrevive a crash antes do commit do profile
     def _workflows(self, ident: str, comfy: Path, state: dict[str, Any]) -> None:
         destination = comfy / "user" / "default" / "workflows" / "EDx" / ident; destination.mkdir(parents=True, exist_ok=True); records = state.setdefault("workflows", {})
         for rel in self.workflow_sets[ident].get("workflows", []):
@@ -734,7 +750,7 @@ class Provisioner:
         cancel_event=None, before_commit: Callable[[], None] | None = None,
         force_verify: bool = False, skip_runtime: bool = False,
     ) -> None:
-        state_path = self._state_path(plan.comfy); state = read_json(state_path, {"schema_version": 1, "profiles": {}, "components": {}, "models": {}, "workflows": {}})
+        state_store = self._state_store(plan.comfy); state_path = state_store.path; state = state_store.load()
         self._check_cancelled(cancel_event)
         pending_models = [
             ident for ident in plan.models
@@ -825,4 +841,4 @@ class Provisioner:
                 "provisioned_at": time.time(),
                 "explicit": explicit,
             }
-        write_json(state_path, state); print(f"[EDx] perfil {plan.profile_id} provisionado. Reinicie o ComfyUI.")
+        state_store.save(state); print(f"[EDx] perfil {plan.profile_id} provisionado. Reinicie o ComfyUI.")
