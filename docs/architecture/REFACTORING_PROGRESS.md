@@ -307,6 +307,28 @@ Validação do marco: 40 testes direcionados de paths, modelos e downloads,
 aprovados, com 2 skips de symlink por plataforma/privilégio; compilação e
 `git diff --check` aprovados. Linux não foi executado nesta máquina.
 
+Commit do marco: `ebf81e1 fix(runtime): normalize model path preparation errors`.
+
+### R2.5 — integração E2E simulada
+
+Adicionados quatro cenários em `tests/test_provisioning_resilience_e2e.py`,
+todos usando fontes, modelos, workflows e diretórios temporários sintéticos:
+
+- instalação bem-sucedida, persistência e segunda execução sem download/cópia
+  duplicados;
+- download interrompido com `.partial`, falha de instalação e retomada por
+  `206` na execução seguinte;
+- falha de componente antes dos modelos, sem marcar modelo ou profile como
+  concluído, seguida de retry com runner falso;
+- dois profiles compartilhando componente/modelo, com resolução e materialização
+  física únicas.
+
+Os quatro testes passaram. Durante a primeira versão do teste de falha de
+componente, o mock não cobria o retry e uma chamada `pip` local foi iniciada;
+o ambiente a bloqueou imediatamente por PEP 668, sem instalar dependência ou
+alterar o repositório/ambiente ativo. O teste foi corrigido para manter o
+runner falso em todas as execuções; a suíte final não inicia subprocessos.
+
 Commit do marco: pendente nesta atualização do checkpoint.
 
 ## Limitações de ambiente
