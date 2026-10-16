@@ -176,6 +176,20 @@ conjuntos passaram isoladamente e na regressão sequencial, sem falha funcional.
 Nenhum manifesto, workflow, modelo, URL, hash ou parâmetro MiniMax H3 foi
 alterado.
 
+### Checkpoint de compatibilidade após os adapters
+
+- `--list` e `--dry-run minimax-h3-fast` passaram em diretório temporário;
+- a bateria histórica direcionada passou: 88 testes;
+- a regressão ampliada sequencial passou: 213 testes, 1 skip conhecido de
+  symlink;
+- compilação de `installer/`, imports dos adapters e `git diff --check`
+  passaram;
+- a inspeção de `Provisioner.plan()`/`install()` não justificou um executor
+  genérico adicional: suas responsabilidades restantes são resolução de
+  diagnóstico, agregação de progresso, ordenação e commit do estado;
+- `AGENTS.md` não rastreado preexistente permanece preservado e fora do
+  staging.
+
 ## Contratos preservados
 
 - comandos e argumentos de `install_workflow.py`;
@@ -194,8 +208,7 @@ alterado.
 
 ## Próxima tarefa segura
 
-Revisar a composição final de `Provisioner.install()` e `plan()` para reduzir
-conhecimento residual sobre detalhes de execução, sem criar um novo serviço
-genérico. Em seguida, caracterizar os contratos CLI `--list`/`--dry-run` e
-executar a bateria histórica de 88 testes mais a regressão ampliada, mantendo
-MiniMax H3 e os contratos compartilhados intactos.
+Próxima evolução segura: ampliar caracterização de falhas parciais e caminhos
+Windows/Linux, sem criar novos adapters até surgir uma responsabilidade
+concreta fora das fronteiras atuais. Manter a revisão dos contratos
+compartilhados e a regressão de MiniMax H3 antes de qualquer mudança futura.
