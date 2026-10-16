@@ -217,7 +217,7 @@ Adicionados testes determinísticos em `tests/test_model_resilience.py` para:
 O conjunto direcionado de modelos, downloads, locks e cache passou de 51 para
 55 testes nesta sessão. A implementação existente já cobria os demais casos
 R2.1 (200/206/416, parcial incompleto/completo, mismatch de `Content-Range`,
-hash inválido, retries finitos, cancelamento e arquivo final válido/ inválido).
+hash inválido, retries finitos, cancelamento e arquivo final válido/inválido).
 
 Não foi reproduzido defeito de produção neste marco; portanto nenhuma lógica
 de download foi alterada. `Content-Length` não é tratado como prova de
@@ -225,7 +225,7 @@ integridade: o contrato atual valida os bytes efetivamente gravados por tamanho
 esperado e SHA-256 quando declarados. Os testes executados são Windows; Linux
 continua não validado nesta sessão.
 
-Commit do marco: pendente nesta atualização do checkpoint.
+Commit do marco: `2d5014c test(runtime): characterize resilient model downloads`.
 
 ### Matriz de estados R2.1
 
@@ -239,6 +239,29 @@ Commit do marco: pendente nesta atualização do checkpoint.
 | qualquer | hash/tamanho inválido | não promove; parcial inválido é removido | sem ownership | nova execução parte de estado seguro |
 | final válido | nova solicitação concorrente | segundo consumidor retorna reutilização | nenhum overwrite | lock thread/processo |
 | final válido | falha transitória na promoção | retry da promoção, sem HTTP extra | sucesso só após promoção | retry local |
+
+### R2.2 — recuperação idempotente de componentes
+
+O teste `test_copy_failure_leaves_retryable_partial_install` reproduziu uma
+falha concreta: `copytree` interrompido deixava um diretório parcial no
+destino; como o marcador ainda não existia, a execução seguinte o tratava como
+custom node externo e não o reparava. A correção em
+`installer/component_adapter.py` prepara cópias novas em
+`<name>.edx-tmp`, promove o diretório somente após a cópia terminar e remove
+staging obsoleto antes de uma nova tentativa. Destinos já existentes sem
+marcador continuam preservados como componentes externos.
+
+Também foi caracterizado o fallback de hardlink para cópia quando o sistema de
+arquivos recusa `os.link`. O adapter continua sem persistir estado; o
+orquestrador só registra o componente após o resultado filesystem/dependências
+ser concluído.
+
+Validação do marco: 19 testes de componentes, 1 skip conhecido de symlink;
+componentes existentes, idempotência, cópia incompleta, falha de dependências,
+preservação externa e regressões de seleção de pip passaram. Nenhum `pip` real
+foi executado.
+
+Commit do marco: pendente nesta atualização do checkpoint.
 
 ## Limitações de ambiente
 

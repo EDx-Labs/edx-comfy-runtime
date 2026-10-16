@@ -98,13 +98,22 @@ class ComponentAdapter:
             })
         elif marker_data.get("fingerprint") != version:
             target.parent.mkdir(parents=True, exist_ok=True)
+            # Uma cópia nova precisa ser preparada fora do destino final. Se o
+            # processo for interrompido no meio do copytree, o diretório
+            # parcial não pode parecer um custom node externo na próxima
+            # execução (e ser preservado para sempre).
+            staging = target.with_name(target.name + ".edx-tmp") if not target.exists() else target
+            if staging != target and staging.exists():
+                shutil.rmtree(staging)
             shutil.copytree(
                 source,
-                target,
+                staging,
                 dirs_exist_ok=True,
                 copy_function=self.link_or_copy,
                 ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
             )
+            if staging != target:
+                staging.replace(target)
             write_json(marker, {
                 "component": ident,
                 "version": item.get("version", "0"),
