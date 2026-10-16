@@ -19,8 +19,9 @@
 2. **Plano de instalação** — em andamento: separar o contrato de dados do
    `InstallPlan` e validar referências declarativas antes das consultas de
    filesystem, mantendo `Provisioner.plan()` como API compatível.
-3. **Execução e adapters** — delimitar instalação de componentes, runtime,
-   modelos e workflows em adapters pequenos, sem alterar seus contratos.
+3. **Execução e adapters** — em andamento: delimitar instalação de workflows,
+   componentes, runtime e modelos em adapters pequenos, sem alterar seus
+   contratos.
 4. **Estado e validação** — em andamento: centralizar o adapter de persistência
    atômica sem alterar transições, ownership ou formato do estado existente.
 5. **Caracterização contínua** — ampliar testes de falhas parciais, caminhos
@@ -77,6 +78,21 @@ Validações executadas:
 - 88 testes de estado, provisionamento, desinstalação, integridade e retry;
 - compilação/import dos módulos alterados;
 - regressão de reatribuição dos registries legados, corrigida antes do commit.
+
+### Marco 4 — adapter de workflow sets
+
+Implementado: `WorkflowInstaller` isola a cópia de workflow sets no destino
+ComfyUI e mantém o registro de hash/edição do usuário. Ele recebe o digest e o
+catálogo por injeção, não faz downloads, não interpreta JSON e não cria um novo
+contrato público.
+
+Commit: `9c4ba96 refactor(runtime): isolate workflow installation adapter`.
+
+Validações executadas:
+
+- 88 testes de provisionamento, desinstalação e contratos MiniMax H3/Krea;
+- testes próprios de idempotência e preservação de edição do usuário;
+- compilação e import do adapter.
 
 ## Contratos preservados
 

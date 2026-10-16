@@ -24,6 +24,7 @@ from .errors import ProvisioningError
 from .plans import InstallPlan
 from .provisioning_state import ProvisioningStateStore
 from .storage import read_json, write_json
+from .workflow_adapter import WorkflowInstaller
 
 ROOT = Path(__file__).resolve().parents[1]
 CHUNK = 8 * 1024 * 1024
@@ -738,12 +739,7 @@ class Provisioner:
                                      "path": str(context.runtime_root), "owned": True, "installed_at": time.time()}
         self._state_store(comfy).save(state)  # ownership gravado já: sobrevive a crash antes do commit do profile
     def _workflows(self, ident: str, comfy: Path, state: dict[str, Any]) -> None:
-        destination = comfy / "user" / "default" / "workflows" / "EDx" / ident; destination.mkdir(parents=True, exist_ok=True); records = state.setdefault("workflows", {})
-        for rel in self.workflow_sets[ident].get("workflows", []):
-            source = ROOT / rel; target = destination / source.name; source_hash = sha256(source); known = records.get(str(target), {})
-            if target.exists() and known and known.get("hash") != sha256(target): print(f"[EDx] preservando workflow editado: {target.name}"); continue
-            if not target.exists() or sha256(target) != source_hash: shutil.copy2(source, target); print(f"[EDx] workflow -> {target}")
-            records[str(target)] = {"workflow_set": ident, "source": rel, "hash": source_hash, "updated_at": time.time()}
+        WorkflowInstaller(source_root=ROOT, workflow_sets=self.workflow_sets, digest=sha256).install(ident, comfy, state)
     def install(
         self, plan: InstallPlan, *, skip_models: bool = False,
         skip_deps: bool = False, progress: Progress | None = None,
