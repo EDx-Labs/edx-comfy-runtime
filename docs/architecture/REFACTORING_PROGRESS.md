@@ -13,17 +13,17 @@
 
 ## Backlog priorizado
 
-1. **Catálogo e resolução declarativa** — extrair leitura dos manifestos,
-   resolução de profiles/capabilities e requisitos para uma unidade pura,
-   preservando as fachadas da API existente.
-2. **Plano de instalação** — em andamento: separar o contrato de dados do
+1. **Catálogo e resolução declarativa** — concluído: extrair leitura dos
+   manifestos, resolução de profiles/capabilities e requisitos para uma
+   unidade pura, preservando as fachadas da API existente.
+2. **Plano de instalação** — concluído: separar o contrato de dados do
    `InstallPlan` e validar referências declarativas antes das consultas de
    filesystem, mantendo `Provisioner.plan()` como API compatível.
 3. **Execução e adapters** — em andamento: delimitar instalação de workflows,
    componentes, runtime e modelos em adapters pequenos, sem alterar seus
    contratos.
-4. **Estado e validação** — em andamento: centralizar o adapter de persistência
-   atômica sem alterar transições, ownership ou formato do estado existente.
+4. **Estado e validação** — adapter de persistência concluído; permanece a
+   separação futura das regras de validação/ownership sem alterar o formato.
 5. **Caracterização contínua** — ampliar testes de falhas parciais, caminhos
    Windows/Linux, reexecução e compatibilidade de CLI.
 
