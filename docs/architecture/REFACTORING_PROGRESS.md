@@ -71,7 +71,7 @@ mantém registros desconhecidos, enquanto `Provisioner` e `Uninstaller` retêm
 as mesmas regras de validação e o mesmo schema JSON. A fachada também mantém
 sincronizadas reatribuições dos registries legados usadas por adapters e testes.
 
-Commit: `4e6fb7e refactor(runtime): centralize provisioning state storage`.
+Commit: `97cdee2 refactor(runtime): centralize provisioning state storage`.
 
 Validações executadas:
 
@@ -86,7 +86,7 @@ ComfyUI e mantém o registro de hash/edição do usuário. Ele recebe o digest e
 catálogo por injeção, não faz downloads, não interpreta JSON e não cria um novo
 contrato público.
 
-Commit: `9c4ba96 refactor(runtime): isolate workflow installation adapter`.
+Commit: `d84277b refactor(runtime): isolate workflow installation adapter`.
 
 Validações executadas:
 
