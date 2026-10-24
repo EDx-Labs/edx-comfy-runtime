@@ -7,12 +7,20 @@
     "requirements": "requirements.txt",
     "torch_backends": {
       "nvidia": {
-        "packages": ["torch", "torchvision", "torchaudio"],
+        "packages": [
+          "torch",
+          "torchvision",
+          "torchaudio"
+        ],
         "index_url": "https://download.pytorch.org/whl/cu130"
       }
     },
     "health_path": "/system_stats",
     "listen_host": "127.0.0.1",
-    "default_port": 8189
+    "default_port": 8189,
+    "archive": {
+      "url": "https://github.com/comfyanonymous/ComfyUI/archive/e01fb4c56b7a88149d469b99cbbfe3223d715054.zip",
+      "commit": "e01fb4c56b7a88149d469b99cbbfe3223d715054"
+    }
   }
 }
