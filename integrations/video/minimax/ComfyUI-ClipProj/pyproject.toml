@@ -3,7 +3,6 @@ name = "comfyui-clipproj"
 description = "Swap a large text encoder for a small one with a learned linear projection. Cuts MiniMax H3 conditioning from 15.7 GB to 5.2 GB."
 version = "0.1.13"
 license = { file = "LICENSE" }
-repository = "https://github.com/nicolab28/ComfyUI-ClipProj"
 requires-python = ">=3.10"
 dependencies = []
 # OS Independent: nothing in the code is platform-specific (no absolute paths,
