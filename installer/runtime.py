@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -24,6 +25,22 @@ Progress = Callable[[dict[str, Any]], None]
 def runtime_python(comfy: Path) -> Path:
     relative = Path(".venv/Scripts/python.exe" if os.name == "nt" else ".venv/bin/python")
     return comfy / relative
+
+
+def _make_writable_and_retry(function, path, error) -> None:
+    """``shutil.rmtree`` error hook: Windows refuses to delete read-only files (Git packs, checkout leftovers)."""
+    os.chmod(path, stat.S_IWRITE)
+    function(path)
+
+
+def remove_tree(path: Path, *, ignore_errors: bool = False) -> None:
+    """Remove a directory tree, including read-only files, which plain ``shutil.rmtree`` cannot on Windows."""
+    if not Path(path).exists():
+        return
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, ignore_errors=ignore_errors, onexc=_make_writable_and_retry)
+    else:
+        shutil.rmtree(path, ignore_errors=ignore_errors, onerror=_make_writable_and_retry)
 
 
 def bundled_python() -> Path | None:
@@ -134,21 +151,21 @@ class BaseRuntimeInstaller:
         if (partial / self.manifest["entrypoint"]).is_file() and read_json(marker).get("commit") == commit:
             return
         if partial.exists():
-            shutil.rmtree(partial)
+            remove_tree(partial)
         self._emit(progress, "INSTALLING_COMPONENT", component="comfyui-source")
         bundle = partial.with_name(partial.name + ".zip")
         unpack = partial.with_name(partial.name + ".unpack")
         try:
             self.downloader(url, bundle, cancel_event)
             if unpack.exists():
-                shutil.rmtree(unpack)
+                remove_tree(unpack)
             unpack.mkdir(parents=True)
             top = self._unpack_archive(bundle, unpack, commit)
             os.replace(unpack / top, partial)
         except zipfile.BadZipFile as error:
             raise ProvisioningError("não foi possível preparar o mecanismo local de geração") from error
         finally:
-            shutil.rmtree(unpack, ignore_errors=True)
+            remove_tree(unpack, ignore_errors=True)
             bundle.unlink(missing_ok=True)
         write_json(marker, {"commit": commit, "url": url})
 
@@ -221,7 +238,7 @@ class BaseRuntimeInstaller:
         else:
             if not (partial / ".git").is_dir():
                 if partial.exists():
-                    shutil.rmtree(partial)
+                    remove_tree(partial)
                 self._run([
                     "git", "clone", "--filter=blob:none", "--no-checkout",
                     self.manifest["repository"], str(partial),
@@ -260,7 +277,7 @@ class BaseRuntimeInstaller:
                 destination = partial / preserved
                 if source.exists():
                     if destination.exists():
-                        shutil.rmtree(destination)
+                        remove_tree(destination)
                     os.replace(source, destination)
             backup = root.with_name(f"{root.name}.replaced-{uuid4().hex[:8]}")
             os.replace(root, backup)

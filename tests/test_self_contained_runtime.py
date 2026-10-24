@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 import tempfile
 import unittest
 import zipfile
@@ -10,7 +12,7 @@ from unittest import mock
 
 from installer import runtime as runtime_module
 from installer.provisioning import ProvisioningCancelled, ProvisioningError
-from installer.runtime import BaseRuntimeInstaller, bundled_python, runtime_python
+from installer.runtime import BaseRuntimeInstaller, bundled_python, remove_tree, runtime_python
 
 COMMIT = "a" * 40
 
@@ -124,6 +126,27 @@ class SelfContainedRuntimeTests(unittest.TestCase):
         installer = BaseRuntimeInstaller(write_manifest(self.root, archive=False), runner=runner, python_executable=self.root / "python.exe")
         installer.ensure(self.target)
         self.assertTrue(any(command[:2] == ["git", "clone"] for command in self.commands))
+
+    def test_a_leftover_installing_folder_with_read_only_files_does_not_block_a_new_install(self):
+        leftover = self.root / "ComfyUI.installing"
+        pack = leftover / ".git" / "objects" / "pack" / "pack-1.pack"
+        pack.parent.mkdir(parents=True)
+        pack.write_bytes(b"git")
+        os.chmod(pack, stat.S_IREAD)
+        installer = BaseRuntimeInstaller(write_manifest(self.root), runner=self.runner, python_executable=self.root / "python.exe", downloader=self.downloader())
+        self.assertTrue(installer.ensure(self.target)["installed"])
+        self.assertFalse(leftover.exists())
+        self.assertFalse((self.target / ".git").exists())
+
+    def test_remove_tree_deletes_read_only_files(self):
+        folder = self.root / "tree"
+        locked = folder / "a" / "b.bin"
+        locked.parent.mkdir(parents=True)
+        locked.write_bytes(b"x")
+        os.chmod(locked, stat.S_IREAD)
+        remove_tree(folder)
+        self.assertFalse(folder.exists())
+        remove_tree(folder)  # idempotent
 
     def test_shipped_manifest_pins_a_full_commit_archive_over_https(self):
         shipped = json.loads((runtime_module.ROOT / "installer" / "runtime.json").read_text(encoding="utf-8"))["comfyui"]
