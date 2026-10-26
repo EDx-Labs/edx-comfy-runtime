@@ -1,0 +1,10 @@
+{
+  "workflow_sets": {
+    "fish-audio-s2": {
+      "workflows": [
+        "workflows/audio/fish-audio-s2/text-to-speech-api.json",
+        "workflows/audio/fish-audio-s2/voice-cloning-api.json"
+      ]
+    }
+  }
+}

@@ -1,3 +1,6 @@
 [submodule "integrations/image/krea2"]
 	path = integrations/image/krea2
 	url = https://github.com/KonokoAz/ComfyUI-Krea2-Reference.git
+[submodule "integrations/audio/ComfyUI-FishAudioS2"]
+	path = integrations/audio/ComfyUI-FishAudioS2
+	url = https://github.com/Saganaki22/ComfyUI-FishAudioS2.git

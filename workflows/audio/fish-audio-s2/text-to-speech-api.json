@@ -1,0 +1,28 @@
+{
+  "2": {
+    "inputs": {
+      "model_path": "s2-pro",
+      "text": "",
+      "language": "auto",
+      "device": "auto",
+      "precision": "auto",
+      "attention": "auto",
+      "max_new_tokens": 0,
+      "chunk_length": 200,
+      "temperature": 0.8,
+      "top_p": 0.8,
+      "repetition_penalty": 1.1,
+      "seed": 0,
+      "keep_model_loaded": true,
+      "offload_to_cpu": false,
+      "compile_model": false
+    },
+    "class_type": "FishS2TTS",
+    "_meta": {"title": "Fish Audio S2-Pro TTS"}
+  },
+  "3": {
+    "inputs": {"audio": ["2", 0]},
+    "class_type": "PreviewAudio",
+    "_meta": {"title": "Fish Audio S2-Pro Output"}
+  }
+}

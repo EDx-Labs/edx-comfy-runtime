@@ -1,0 +1,15 @@
+{
+  "components": {
+    "fish-audio-s2-runtime": {
+      "version": "0.5.3",
+      "name": "ComfyUI-FishAudioS2",
+      "install": "requirements",
+      "source": "integrations/audio/ComfyUI-FishAudioS2",
+      "hardware": {
+        "min_vram": 16,
+        "recommended_vram": 24,
+        "supported_backends": ["cuda"]
+      }
+    }
+  }
+}
