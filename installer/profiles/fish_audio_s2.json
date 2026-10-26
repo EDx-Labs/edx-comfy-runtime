@@ -1,0 +1,20 @@
+{
+  "profiles": {
+    "fish-audio-s2-pro": {
+      "version": "1",
+      "description": "Fish Audio S2-Pro para texto-para-voz e clonagem de voz via ComfyUI-FishAudioS2.",
+      "components": ["fish-audio-s2-runtime"],
+      "models": ["fish-audio-s2-pro"],
+      "workflow_sets": ["fish-audio-s2"],
+      "hardware": {
+        "min_vram": 16,
+        "recommended_vram": 24,
+        "supported_backends": ["cuda"]
+      },
+      "warnings": [
+        "Os pesos são baixados pelo node na primeira geração e exigem aceitar a licença Research da Fish Audio.",
+        "O node upstream instala dependências ausentes ao iniciar; dependências dac e audiotools são instaladas com --no-deps para evitar o conflito de protobuf documentado pelo projeto."
+      ]
+    }
+  }
+}

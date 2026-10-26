@@ -1,0 +1,35 @@
+{
+  "4": {
+    "inputs": {"audio": "reference.wav"},
+    "class_type": "LoadAudio",
+    "_meta": {"title": "Fish Audio S2-Pro Voice Reference"}
+  },
+  "9": {
+    "inputs": {
+      "model_path": "s2-pro",
+      "text": "",
+      "reference_audio": ["4", 0],
+      "language": "auto",
+      "device": "auto",
+      "precision": "auto",
+      "attention": "auto",
+      "max_new_tokens": 0,
+      "chunk_length": 200,
+      "temperature": 0.8,
+      "top_p": 0.8,
+      "repetition_penalty": 1.1,
+      "seed": 0,
+      "keep_model_loaded": true,
+      "offload_to_cpu": false,
+      "compile_model": false,
+      "reference_text": ""
+    },
+    "class_type": "FishS2VoiceCloneTTS",
+    "_meta": {"title": "Fish Audio S2-Pro Voice Clone"}
+  },
+  "3": {
+    "inputs": {"audio": ["9", 0]},
+    "class_type": "PreviewAudio",
+    "_meta": {"title": "Fish Audio S2-Pro Output"}
+  }
+}
