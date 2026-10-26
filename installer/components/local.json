@@ -2,6 +2,7 @@
   "components": {
     "minimax-runtime": {"version":"1.3.1","name":"comfyui-minimaxh3-easy-optimized","install":"requirements","source":"integrations/video/minimax/comfyui-minimaxh3-easy","hardware":{"min_vram":12,"recommended_vram":24,"supported_backends":["cuda","rocm"]}},
     "minimax-h3-continuation": {"version":"0.6.3","name":"ComfyUI-Minimax-H3-Continuation","source":"integrations/video/minimax/ComfyUI-Minimax-H3-Continuation","hardware":{"min_vram":12,"recommended_vram":24,"supported_backends":["cuda","rocm"]}},
+    "minimax-h3-latent-io": {"name":"edx-h3-latent-io","source":"integrations/video/minimax/edx-h3-latent-io","hardware":{"min_vram":12,"recommended_vram":24,"supported_backends":["cuda","rocm"]}},
     "clipproj": {"version":"0.1.13","name":"ComfyUI-ClipProj","source":"integrations/video/minimax/ComfyUI-ClipProj"},
     "minimax-kjnodes": {"name":"ComfyUI-KJNodes","source":"integrations/video/minimax/ComfyUI-KJNodes"},
     "minimax-memory-cleanup": {"name":"Comfyui-Memory_Cleanup","source":"integrations/video/minimax/Comfyui-Memory_Cleanup"},
