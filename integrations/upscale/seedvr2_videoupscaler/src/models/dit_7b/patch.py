@@ -21,7 +21,7 @@ from torch.nn.modules.utils import _triple
 from ...common.cache import Cache
 from ...common.distributed.ops import gather_outputs, slice_inputs
 
-from .......upscale.seedvr2_videoupscaler.src.models.dit_7b import na
+from . import na
 
 
 class PatchIn(nn.Module):

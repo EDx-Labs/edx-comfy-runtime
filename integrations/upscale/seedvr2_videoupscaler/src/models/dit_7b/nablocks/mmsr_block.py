@@ -21,7 +21,7 @@ from torch.nn import functional as F
 from ....common.cache import Cache
 from ....common.distributed.ops import gather_heads_scatter_seq, gather_seq_scatter_heads_qkv
 
-from ........upscale.seedvr2_videoupscaler.src.models.dit_7b import na
+from .. import na
 from ..attention import FlashAttentionVarlen
 from ..blocks.mmdit_window_block import MMWindowAttention, MMWindowTransformerBlock
 from ..mm import MMArg

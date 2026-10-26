@@ -20,7 +20,7 @@ from torch import nn
 from ...common.cache import Cache
 from ...common.distributed.ops import slice_inputs
 
-from .......upscale.seedvr2_videoupscaler.src.models.dit_3b import na
+from . import na
 from .embedding import TimeEmbedding
 from .modulation import get_ada_layer
 from .nablocks import get_nablock

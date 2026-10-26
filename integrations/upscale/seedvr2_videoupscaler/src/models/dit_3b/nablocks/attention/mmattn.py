@@ -23,7 +23,7 @@ from .....common.cache import Cache
 from .....common.distributed.ops import gather_heads_scatter_seq, gather_seq_scatter_heads_qkv
 from .....common.half_precision_fixes import safe_pad_operation
 
-from .........upscale.seedvr2_videoupscaler.src.models.dit_3b import na
+from ... import na
 from ...attention import FlashAttentionVarlen
 from ...mm import MMArg, MMModule
 from ...normalization import norm_layer_type
