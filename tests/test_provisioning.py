@@ -301,6 +301,22 @@ class ProvisionerTests(unittest.TestCase):
         self.assertEqual(groups["krea2-full"]["members"], ["krea2", "krea2-reference"])
         self.assertEqual(groups["krea2-full"]["profile"], "krea2-full")
 
+    def test_a_profile_with_a_missing_source_does_not_hide_the_rest_of_the_catalog(self) -> None:
+        original = self.provisioner.plan
+
+        def plan(profile_id, comfy):
+            if profile_id == "seedvr2":
+                raise ProvisioningError("fonte local vazia (submódulo não inicializado?): integrations/x")
+            return original(profile_id, comfy)
+
+        with mock.patch.object(self.provisioner, "plan", side_effect=plan):
+            catalog = {item["id"]: item for item in self.provisioner.capability_catalog(self.comfy)}
+        broken = next(p for item in catalog.values() for p in item["providers"] if p["id"] == "seedvr2")["installation"]
+        self.assertFalse(broken["installed"])
+        self.assertIn("submódulo não inicializado", broken["unavailable_reason"])
+        self.assertFalse(catalog["minimax"]["providers"][0]["installation"]["installed"])
+        self.assertNotIn("unavailable_reason", catalog["minimax"]["providers"][0]["installation"])
+
     def test_profile_installation_is_distinct_from_manifest_availability(self) -> None:
         status = self.provisioner.profile_installation("seedvr2", self.comfy)
         self.assertFalse(status["installed"])

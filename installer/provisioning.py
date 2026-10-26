@@ -257,7 +257,13 @@ class Provisioner:
                     "warnings": list(profile.get("warnings", [])),
                 }
                 if comfy is not None:
-                    details["installation"] = self.profile_installation(profile_id, comfy)
+                    try:
+                        details["installation"] = self.profile_installation(profile_id, comfy)
+                    except ProvisioningError as error:
+                        # One profile with a broken source (e.g. an uninitialised submodule) must not hide every other capability.
+                        details["installation"] = {"installed": False, "profile_id": profile_id, "missing": ["component_source"],
+                                                   "unavailable_reason": str(error), "warnings": [str(error)], "runtime_dependencies": [],
+                                                   "reused_assets": [], "pending_assets": [], "downloaded_bytes": 0, "total_bytes": None}
                 profiles.append(details)
             capability_id = aliases[0] if aliases else category
             result.append({
