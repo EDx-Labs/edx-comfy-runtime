@@ -23,6 +23,7 @@
     "minimax-music3-text-encoder":{"version":"1","directory":"text_encoders","filename":"minimax_music3_text_encoder_pruned_int8_convrot.safetensors","url":"https://huggingface.co/Comfy-Org/MiniMax-Music-3/resolve/main/text_encoders/minimax_music3_text_encoder_pruned_int8_convrot.safetensors","sha256":"010b7416d2336a08c711bc22ee65849c9623069ddb7d89bec011a75699e52014","size_bytes":9196611886},
     "minimax-music3-dav":{"version":"1","directory":"vae","filename":"minimax_music3_dav.safetensors","url":"https://huggingface.co/Comfy-Org/MiniMax-Music-3/resolve/main/vae/minimax_music3_dav.safetensors","sha256":"2a32155b769be01445fcc2a8663b910fc9e1751e18dc1c3ec528064512d9ef0c","size_bytes":216696128},
     "chatterbox-default-pack":{"version":"1.2.1","directory":"tts/chatterbox","filename":"resembleai_default_voice","repo_id":"ResembleAI/chatterbox","install_mode":"node-managed","files":["ve.safetensors","t3_cfg.safetensors","s3gen.safetensors","tokenizer.json","conds.pt"]},
+    "chatterbox-multilingual-v3":{"version":"3","directory":"chatterbox/chatterbox_multilingual","filename":"t3_mtl23ls_v3.safetensors","repo_id":"ResembleAI/chatterbox","install_mode":"node-managed","files":["ve.pt","t3_mtl23ls_v3.safetensors","s3gen.pt","grapheme_mtl_merged_expanded_v1.json","conds.pt","Cangjie5_TC.json"]},
     "fish-audio-s2-pro":{"version":"1","directory":"fishaudioS2","filename":"s2-pro","repo_id":"fishaudio/s2-pro","install_mode":"node-managed"}
   }
 }

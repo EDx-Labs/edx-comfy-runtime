@@ -13,6 +13,7 @@
     "qwen-asr-runtime": {"name":"comfyui-qwen-asr","source":"integrations/audio/comfyui-qwen-asr","hardware":{"recommended_vram":8,"supported_backends":["cuda","rocm"]}},
     "seedvr2-runtime": {"version":"2.5.24","name":"seedvr2_videoupscaler","source":"integrations/upscale/seedvr2_videoupscaler","hardware":{"min_vram":8,"recommended_vram":16,"supported_backends":["cuda","rocm","mps"]}},
     "chatterbox-runtime": {"version":"1.2.1","name":"ComfyUI-Chatterbox","source":"integrations/audio/chatterbox","hardware":{"recommended_vram":8,"supported_backends":["cuda","rocm"]}},
+    "chatterbox-multilingual-runtime": {"version":"1.0.0","name":"ComfyUI-Chatterbox-Multilingual","source":"integrations/audio/chatterbox-multilingual","hardware":{"recommended_vram":8,"supported_backends":["cuda","rocm"]}},
     "krea2-reference-runtime": {"version":"1.0.0","name":"ComfyUI-Krea2-Reference","source":"integrations/image/krea2"}
   }
 }

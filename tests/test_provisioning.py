@@ -283,7 +283,7 @@ class ProvisionerTests(unittest.TestCase):
 
     def test_capability_discovery_exposes_alternative_voice_providers(self) -> None:
         capabilities = self.provisioner.list_capabilities()
-        self.assertEqual(capabilities["text-to-speech"]["providers"], ["qwen3-tts", "chatterbox-tts"])
+        self.assertEqual(capabilities["text-to-speech"]["providers"], ["qwen3-tts", "chatterbox-tts", "chatterbox-multilingual", "fish-audio-s2-pro"])
         self.assertIn("chatterbox-voice-clone", capabilities["voice-cloning"]["providers"])
 
     def test_normalized_catalog_keeps_runtime_as_requirements_authority(self) -> None:
