@@ -6,6 +6,7 @@
     "music-generation": {"providers":["minimax-music3-low-vram","minimax-music3"]},
     "text-to-speech": {"aliases":["qwen3_tts","fish_audio_s2","fish-audio-s2","chatterbox_tts","chatterbox_multilingual"],"providers":["qwen3-tts","chatterbox-tts","chatterbox-multilingual","fish-audio-s2-pro"]},
     "voice-cloning": {"providers":["qwen3-tts","chatterbox-voice-clone","chatterbox-multilingual","fish-audio-s2-pro"]},
+    "voice-design": {"aliases":["voice_design"],"providers":["qwen3-voice-design"]},
     "speech-to-text": {"providers":["qwen-asr"]},
     "upscale": {"aliases":["seedvr2"],"providers":["seedvr2"]},
     "text-generation": {"aliases":["text-task","qwen-text"],"name":"Tarefa textual local","description":"Executa uma tarefa textual estruturada (instruções + entrada) via Qwen no ComfyUI.","providers":["qwen-text"]},
